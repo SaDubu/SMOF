@@ -6,6 +6,21 @@ from ultralytics import YOLO
 from scipy.optimize import linear_sum_assignment
 from filterpy.kalman import KalmanFilter
 
+import sys
+
+video_cap = '../MOT15/train/PETS09-S2L1/img1/%06d.jpg'
+
+try:
+    from rknn.api import RKNN
+    RKNN_AVAILABLE = True
+except ImportError:
+    RKNN_AVAILABLE = False
+    print('rknn 관련 기능을 비활성화 합니다.')
+
+if RKNN_AVAILABLE :
+    from rknn_yolo8 import Yolov8 as ryolo8
+
+
 #지금 구축하고 있는 방식의 완성본이 될 코드이므로 모듈화에 조금 더 집중해서 진행을 해야한다.
 #일단 모듈화로 이루는 것은 나중에 진행해도 별 문제 없을 것 같고 이건 일단 기본적으로 아이디어 검증을 해야한다고 생각함.
 #이걸 잘 만들어야 나중에 모듈화를 시킬 때 큰 무리 없이 진행이 가능할 것 같음.
@@ -170,12 +185,38 @@ class MotionAnalyzer:
 
 class ObjectDetector:
     def __init__(self, model_path='yolov8s.pt'):
-        self.model = YOLO(model_path)
+        if RKNN_AVAILABLE :
+            model_path = 'yolov8.rknn'
+            self.model = ryolo8(model_path, 'rk3588')
+        else :
+            self.model = YOLO(model_path)
 
     def detect_moving_objects(self, frame, mask, n_limit, m_limit):
         if cv.countNonZero(mask) < n_limit: return []
-        results = self.model(frame, verbose=False)
+        
         detections = []
+
+        if RKNN_AVAILABLE :
+            results = self.model.one_time_run(frame)
+            if len(results) > 0 :
+                for result in results :
+                    x1, x2, y1, y2 = map(int, result['box'])
+                    if x1 > x2:
+                        x1, x2 = x2, x1
+                    if y1 > y2:
+                        y1, y2 = y2, y1
+                    roi = mask[max(0, y1):y2, max(0, x1):x2]
+
+                    if roi.size > 0:
+                        overlap_ratio = cv.countNonZero(roi) / roi.size
+                        if overlap_ratio >= 0.1 and cv.countNonZero(roi) >= m_limit:
+                            detections.append({
+                                'box': (x1, x2, y1, y2),
+                                'cls': result['cls']
+                                })
+            return detections
+
+        results = self.model(frame, verbose=False)
         if results[0].boxes is not None:
             boxes = results[0].boxes.xyxy.cpu().numpy()
             clss = results[0].boxes.cls.cpu().numpy().astype(int)
@@ -186,12 +227,15 @@ class ObjectDetector:
                     overlap_ratio = cv.countNonZero(roi) / roi.size
                     if overlap_ratio >= 0.1 and cv.countNonZero(roi) >= m_limit:
                         detections.append({'box': (x1, y1, x2, y2), 'cls': cls})
+
         return detections
+
+    
 
 # --- [메인 컨트롤러] ---
 def run_experiment():
     # 1. 환경 설정
-    cap = cv.VideoCapture('../datasets/MOT15/train/PETS09-S2L1/img1/%06d.jpg')
+    cap = cv.VideoCapture('../MOT15/train/PETS09-S2L1/img1/%06d.jpg')
     #cap = cv.VideoCapture(0)
     vp = VisionProcessor()
     ma = MotionAnalyzer(grid_step=10)

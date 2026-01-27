@@ -16,10 +16,11 @@ k_run = sb.run_sort_experiment
 
 video_cap = 0
 video_option = True
+IMG_SIZE = 640
 
 if video_option :
     video_cap = None
-    video_cap = 'MOT15/train/PETS09-S2L1/img1/%06d.jpg'
+    video_cap = sb.video_cap
 
 def get_color(idx):
     np.random.seed(idx)
@@ -151,6 +152,7 @@ def run():
     while True :
         ret, frame = cap.read()
         if not ret : return 1
+        frame = cv2.resize(frame, (IMG_SIZE, IMG_SIZE))
         
         gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)   
 
@@ -162,7 +164,7 @@ def run():
             continue
 
         display_frame = frame.copy()
-        curr_obj.clear()
+        curr_obj = []
 
         diff, mask = vp.get_clean_mask(prev_frame, gray_frame, threshold_value)
         vectors = ma.get_vectors(prev_frame, gray_frame, p0, mask, 1.5, 25.0)
