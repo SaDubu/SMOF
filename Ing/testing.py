@@ -3,15 +3,15 @@ import cv2
 import numpy as np
 import smof_build as sb
 
-vp = sb.VisionProcessor
-ma = sb.MotionAnalyzer
-od = sb.ObjectDetector
+vp = sb.VisionProcessor()
+ma = sb.MotionAnalyzer()
+od = sb.ObjectDetector()
 nor_run = sb.run_experiment
 
-kal = sb.KalmanBoxTracker
-k_vp = sb.KalVisionProcessor
-k_ma = sb.KalMotionAnalyzer
-k_od = sb.KalObjectDetector
+#kal = sb.KalmanBoxTracker()
+k_vp = sb.KalVisionProcessor()
+k_ma = sb.KalMotionAnalyzer()
+k_od = sb.KalObjectDetector()
 k_run = sb.run_sort_experiment
 
 video_cap = 0
@@ -50,7 +50,7 @@ def get_rectangle_center(p1, p2) :
     :return: 중심점의 좌표 (x, y) 튜플
     '''
     x = get_midpoint(p1[0], p2[0])
-    y = get_midpoint(p1[1]. p2[1])
+    y = get_midpoint(p1[1], p2[1])
     center = (x, y)
     return center
 
@@ -157,7 +157,7 @@ def run():
         if start_one_time :
             start_one_time = False
             p0 = grid_init(gray_frame)
-            trajectory_canvas = get_canvas(gray_frame)
+            trajectory_canvas = get_canvas(frame)
             prev_frame = gray_frame
             continue
 
@@ -225,9 +225,9 @@ def run():
         cv2.imshow('Integrated Modular Vision Machine', combined)
 
         # 루프 종료 및 제어
-        if prev_gray is not None :
-            prev_gray = cv2.addWeighted(prev_gray, 0.7, gray_frame, 0.3, 0)
-        prev_gray = gray_frame.copy()
+        if prev_frame is not None :
+            prev_frame = cv2.addWeighted(prev_frame, 0.7, gray_frame, 0.3, 0)
+        prev_frame = gray_frame.copy()
         key = cv2.waitKeyEx(30)
         if key == 27: break
         elif key == ord('c') or key == ord('C'):
@@ -236,7 +236,8 @@ def run():
             threshold_value = min(255, threshold_value + 2)
         elif key in [0x280000, 25]: # Down
             threshold_value = max(0, threshold_value - 2)    
-        
-
 
     return 0
+
+if __name__ == '__main__' :
+    run()
