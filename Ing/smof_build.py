@@ -1,3 +1,4 @@
+#이 파일은 지금까지 구현했던 코드들을 모아둔 것임. 필요하면 여기서 따서 사용해도 됨.
 import cv2 as cv
 import numpy as np
 import os
