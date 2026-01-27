@@ -11,7 +11,7 @@ import sys
 video_cap = '../MOT15/train/PETS09-S2L1/img1/%06d.jpg'
 
 try:
-    from rknn.api import RKNN
+    from rknn.api import RKNN # type: ignore
     RKNN_AVAILABLE = True
 except ImportError:
     RKNN_AVAILABLE = False
