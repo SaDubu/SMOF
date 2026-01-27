@@ -19,7 +19,7 @@ video_option = True
 
 if video_option :
     video_cap = None
-    video_cap = '../datasets/MOT15/train/PETS09-S2L1/img1/%06d.jpg'
+    video_cap = 'MOT15/train/PETS09-S2L1/img1/%06d.jpg'
 
 def get_color(idx):
     np.random.seed(idx)
@@ -213,7 +213,29 @@ def run():
         display_frame = vp.draw_contours(display_frame, mask)
 
         dot_mask = cv2.cvtColor(trajectory_canvas, cv2.COLOR_BGR2GRAY) > 0
-            
+        display_frame[dot_mask] = cv2.addWeighted(display_frame, 0.4, trajectory_canvas, 0.6, 0)[dot_mask]
+
+        diff_bgr = cv2.cvtColor(diff, cv2.COLOR_GRAY2BGR)
+        mask_bgr = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+        combined = cv2.hconcat([diff_bgr, mask_bgr, display_frame])
+        
+        cv2.putText(combined, f"Thresh: {threshold_value}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        total_ids = len(prev_obj)
+        cv2.putText(combined, f"Total IDs: {total_ids}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        cv2.imshow('Integrated Modular Vision Machine', combined)
+
+        # 루프 종료 및 제어
+        if prev_gray is not None :
+            prev_gray = cv2.addWeighted(prev_gray, 0.7, gray_frame, 0.3, 0)
+        prev_gray = gray_frame.copy()
+        key = cv2.waitKeyEx(30)
+        if key == 27: break
+        elif key == ord('c') or key == ord('C'):
+            trajectory_canvas = np.zeros_like(trajectory_canvas)
+        elif key in [0x260000, 24]: # Up
+            threshold_value = min(255, threshold_value + 2)
+        elif key in [0x280000, 25]: # Down
+            threshold_value = max(0, threshold_value - 2)    
         
 
 
