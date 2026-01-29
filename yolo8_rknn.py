@@ -404,7 +404,7 @@ if __name__ == '__main__':
             print('\n\nIMG: {}'.format(img_name))
             img_p = img_src.copy()
             if boxes is not None:
-                add_draw(img_p, co_helper.get_real_box(boxes), scores, classes)
+                draw(img_p, co_helper.get_real_box(boxes), scores, classes)
                 #h, w, _ = img_src.shape
                 #scale_w = w / IMG_SIZE[0]
                 #scale_h = h / IMG_SIZE[1]
