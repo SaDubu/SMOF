@@ -203,8 +203,20 @@ def run():
         
         for i, prev in enumerate(prev_obj):
             if i not in matched_prev_indices:
-                prev['lost_count'] += 1
-                curr_obj.append(prev)
+                if prev['lost_count'] < max_lost:
+                    # 위치 관성 이동
+                    pv = prev['vec'] if prev['vec'] is not None else (0, 0)
+                    new_pos = (int(prev['pos'][0] + pv[0]), int(prev['pos'][1] + pv[1]))
+                    
+                    # [수정] 박스 좌표도 이동 방향에 따라 같이 옮겨주면 좋습니다.
+                    if 'box' in prev:
+                        bx1, by1, bx2, by2 = prev['box']
+                        prev['box'] = (int(bx1 + pv[0]), int(by1 + pv[1]), 
+                                       int(bx2 + pv[0]), int(by2 + pv[1]))
+                    
+                    prev['pos'] = new_pos
+                    prev['lost_count'] += 1
+                    curr_obj.append(prev) # 소실 카운트가 올라간 상태로 보존
             else :
                 prev['lost_count'] = 0
 

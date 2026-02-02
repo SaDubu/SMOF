@@ -260,6 +260,7 @@ def add_draw(image, boxes, scores, classes):
 
     for box, score, cl in zip(boxes, scores, classes):
         y1, x1, y2, x2 = [int(_b) for _b in box]
+        print("%s @ (%d %d %d %d) %.3f" % (CLASSES[cl], y1, x1, y2, x2, score))
         
         label_text = CLASSES[cl]
         full_label = f"{label_text} {score:.2f}"
@@ -302,6 +303,20 @@ def img_check(path):
             return True
     return False
 
+def get_labels(txt_path):
+    if not os.path.exists(txt_path): return []
+    with open(txt_path, 'r') as f:
+        return [list(map(float, line.split())) for line in f.readlines()]
+
+def calculate_iou(box1, box2):
+    # box = [x1, y1, x2, y2]
+    x1, y1, x2, y2 = max(box1[0], box2[0]), max(box1[1], box2[1]), min(box1[2], box2[2]), min(box1[3], box2[3])
+    intersection = max(0, x2 - x1) * max(0, y2 - y1)
+    area1 = (box1[2] - box1[0]) * (box1[3] - box1[1])
+    area2 = (box2[2] - box2[0]) * (box2[3] - box2[1])
+    union = area1 + area2 - intersection
+    return intersection / union if union > 0 else 0
+
 import time
 
 if __name__ == '__main__':
@@ -343,6 +358,12 @@ if __name__ == '__main__':
     total_time = 0
     processed_frames = 0    
 
+    all_data_logs = []
+    total_gt_count = 0
+    total_tp_count = 0
+    error_img_path_list = []
+    iou_threshold = 0.5
+
     # run test
     img_list_len = len(img_list)
     print(img_list_len)
@@ -367,6 +388,8 @@ if __name__ == '__main__':
         #print(f'\r\033[Kinfer {i+1}/{img_list_len}', end='')
 
         img_name = img_list[i]
+
+        img_name = img_list[i]
         img_path = os.path.join(args.img_folder, img_name)
         if not os.path.exists(img_path):
             print("{} is not found", img_name)
@@ -381,6 +404,25 @@ if __name__ == '__main__':
         img_src = np.fromfile('./input_b/demo_c_input_hwc_rgb.txt', dtype=np.uint8).reshape(640,640,3)
         img_src = cv2.cvtColor(img_src, cv2.COLOR_RGB2BGR)
         '''
+
+        img_basename = os.path.splitext(img_name)[0]
+        label_path = f'../../Documents/test_label/{img_basename}.txt'
+        gt_list = get_labels(label_path)
+        total_gt_count += len(gt_list)
+        matched_preds_idx = []
+        img_tp = 0
+
+        # GT를 [x1, y1, x2, y2] 픽셀 단위로 미리 변환
+        processed_gts = []
+        h, w, _ = img_src.shape
+        for gt in gt_list:
+            cls, gx, gy, gw, gh = gt
+            # 정규화 xywh -> 픽셀 x1y1x2y2
+            x1 = (gx - gw/2) * w
+            y1 = (gy - gh/2) * h
+            x2 = (gx + gw/2) * w
+            y2 = (gy + gh/2) * h
+            processed_gts.append({'cls': int(cls), 'box': [x1, y1, x2, y2]})
 
         start_tick = time.time()
 
@@ -400,18 +442,20 @@ if __name__ == '__main__':
         outputs = model.run([input_data])
         boxes, classes, scores = add_post_process(outputs) 
 
+        image_record = {'img_name': img_name, 'objects' : []}
+
         if args.img_show or args.img_save:
             print('\n\nIMG: {}'.format(img_name))
             img_p = img_src.copy()
             if boxes is not None:
-                draw(img_p, co_helper.get_real_box(boxes), scores, classes)
+                add_draw(img_p, co_helper.get_real_box(boxes), scores, classes)
                 #h, w, _ = img_src.shape
                 #scale_w = w / IMG_SIZE[0]
                 #scale_h = h / IMG_SIZE[1]
                 #boxes[:, [0, 2]] *= scale_w
                 #boxes[:, [1, 3]] *= scale_h
                 
-                #draw(img_p, boxes, scores, classes)
+                #add_draw(img_p, boxes, scores, classes)
 
             if args.img_save and boxes is not None:
                 result_path = os.path.join(save_path, img_name)
@@ -441,6 +485,50 @@ if __name__ == '__main__':
                                                 score = round(scores[i], 5).item()
                                                 )
         end_tick = time.time()
+
+        if boxes is not None:
+        # RKNN boxes는 이미 스케일링된 픽셀 좌표 [x1, y1, x2, y2]라고 가정
+            for gt in processed_gts:
+                matched = False
+                for p_idx, (p_box, p_cls) in enumerate(zip(boxes, classes)):
+                    if p_idx in matched_preds_idx: continue
+                    
+                    if gt['cls'] == int(p_cls) and calculate_iou(gt['box'], p_box) >= iou_threshold:
+                        img_tp += 1
+                        matched = True
+                        matched_preds_idx.append(p_idx)
+                        image_record['objects'].append({
+                            'status': 'Success (TP)',
+                            'gt_id': gt['cls'], 'pred_id': int(p_cls)
+                        })
+                        break
+                
+                if not matched:
+                    image_record['objects'].append({
+                        'status': 'Missed (FN)',
+                        'gt_id': gt['cls'], 'pred_id': None
+                    })
+
+            # 3. 추가 검출(FP) 판별
+            for p_idx, (p_box, p_cls) in enumerate(zip(boxes, classes)):
+                if p_idx not in matched_preds_idx:
+                    image_record['objects'].append({
+                        'status': 'Extra (FP)',
+                        'gt_id': None, 'pred_id': int(p_cls)
+                    })
+        else:
+            # 검출 결과가 아예 없는 경우 모든 GT는 FN
+            for gt in processed_gts:
+                image_record['objects'].append({'status': 'Missed (FN)', 'gt_id': gt['cls'], 'pred_id': None})
+
+        # 결과 요약 및 에러 이미지 수집
+        total_tp_count += img_tp
+        all_data_logs.append(image_record)
+        
+        # 예측 개수와 TP가 다르면 에러로 간주
+        pred_count = len(boxes) if boxes is not None else 0
+        if pred_count > img_tp or len(gt_list) > img_tp:
+            error_img_path_list.append(os.path.join(save_path, img_name))
     
         curr_time = end_tick - start_tick
         total_time += curr_time
@@ -457,6 +545,11 @@ if __name__ == '__main__':
         print('Average FPS: {:.2f}'.format(avg_fps))
         print('Average Latency: {:.4f}s'.format(total_time / processed_frames))
         print('='*30)
+
+        recall = (total_tp_count / total_gt_count * 100) if total_gt_count > 0 else 0
+        print(f"\n[최종 인식률 보고서]")
+        print(f"전체 정답 객체 수: {total_gt_count}개 / 검출 성공: {total_tp_count}개")
+        print(f"인식률(Recall): {recall:.2f}%")
 
     # calculate maps
     if args.coco_map_test is True:

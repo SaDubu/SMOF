@@ -1,0 +1,36 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "type": "shell", // "cppbuild"에서 "shell"로 변경
+            "label": "C/C++: aarch64-linux-gnu-g++ build active file",
+            "command": "/usr/bin/aarch64-linux-gnu-g++",
+            "args": [
+                "-fdiagnostics-color=always",
+                "-g",
+                "${file}",
+                "-o",
+                "${fileDirname}/${fileBasenameNoExtension}",
+                "-I/usr/include/opencv4",
+                "-lopencv_core",
+                "-lopencv_imgproc",
+                "-lopencv_highgui",
+                "-lopencv_imgcodecs",
+                "-lopencv_videoio",
+                "-lrt",
+                "-lpthread"
+            ],
+            "options": {
+                "cwd": "${fileDirname}"
+            },
+            "problemMatcher": [
+                "$gcc"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "detail": "compiler: /usr/bin/aarch64-linux-gnu-g++"
+        }
+    ]
+}

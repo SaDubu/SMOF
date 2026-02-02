@@ -12,6 +12,8 @@ video_cap = '../MOT15/train/PETS09-S2L1/img1/%06d.jpg'
 
 try:
     from rknn.api import RKNN # type: ignore
+    current_path = os.path.dirname(os.path.abspath(__file__))
+    video_cap = os.path.join(current_path, video_cap)
     RKNN_AVAILABLE = True
 except ImportError:
     RKNN_AVAILABLE = False
@@ -186,7 +188,7 @@ class MotionAnalyzer:
 class ObjectDetector:
     def __init__(self, model_path='yolov8s.pt'):
         if RKNN_AVAILABLE :
-            model_path = 'yolov8.rknn'
+            model_path = os.path.join(current_path, 'yolov8.rknn')
             self.model = ryolo8(model_path, 'rk3588')
         else :
             self.model = YOLO(model_path)
@@ -231,7 +233,7 @@ class ObjectDetector:
 # --- [메인 컨트롤러] ---
 def run_experiment():
     # 1. 환경 설정
-    cap = cv.VideoCapture('../MOT15/train/PETS09-S2L1/img1/%06d.jpg')
+    cap = cv.VideoCapture(video_cap)
     #cap = cv.VideoCapture(0)
     vp = VisionProcessor()
     ma = MotionAnalyzer(grid_step=10)
@@ -375,11 +377,11 @@ def run_experiment():
         dot_mask = cv.cvtColor(trajectory_canvas, cv.COLOR_BGR2GRAY) > 0
         display_frame[dot_mask] = cv.addWeighted(display_frame, 0.4, trajectory_canvas, 0.6, 0)[dot_mask]
         
-        #diff_bgr = cv.cvtColor(diff, cv.COLOR_GRAY2BGR)
-        #mask_bgr = cv.cvtColor(mask, cv.COLOR_GRAY2BGR)
-        #combined = cv.hconcat([diff_bgr, mask_bgr, display_frame])
+        diff_bgr = cv.cvtColor(diff, cv.COLOR_GRAY2BGR)
+        mask_bgr = cv.cvtColor(mask, cv.COLOR_GRAY2BGR)
+        combined = cv.hconcat([diff_bgr, mask_bgr, display_frame])
 
-        combined = display_frame
+        #combined = display_frame
         
         cv.putText(combined, f"Thresh: {threshold_value}", (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         total_ids = len(prev_objects)
