@@ -296,6 +296,12 @@ def setup_model(args):
     print('Model-{} is {} model, starting val'.format(model_path, platform))
     return model, platform
 
+def setup_rknn(model_path, target, device_id=None, core_mask=0x0) :
+    from py_utils.rknn_executor import RKNN_model_container 
+    model = RKNN_model_container(model_path, target, device_id, core_mask)
+    print('Model-{} is rknn model, starting val'.format(model_path))
+    return model
+
 def img_check(path):
     img_type = ['.jpg', '.jpeg', '.png', '.bmp']
     for _type in img_type:

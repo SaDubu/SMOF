@@ -7,6 +7,7 @@ import numpy as np
 import argparse
 import sys
 import time
+import concurrent.futures
 
 # add path
 realpath = os.path.abspath(__file__)
@@ -17,28 +18,19 @@ sys.path.append('/home/orangepi/Projects/rknn_model_zoo/')
 
 from py_utils.coco_utils import COCO_test_helper
 
-from yolo8_rknn import setup_model 
+from yolo8_rknn import setup_rknn 
 
 IMG_SIZE = (480, 480)
 
-Model = None
-Platform = None
-
-def run(img_src) :
+def run(model, img_src) :
     co_helper = COCO_test_helper(enable_letter_box=True)
 
     img = co_helper.letter_box(im= img_src.copy(), new_shape=(IMG_SIZE[1], IMG_SIZE[0]), pad_color=(0,0,0))
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-    # preprocee if not rknn model
-    if Platform in ['pytorch', 'onnx']:
-        input_data = img.transpose((2,0,1))
-        input_data = input_data.reshape(1,*input_data.shape).astype(np.float32)
-        input_data = input_data/255.
-    else:
-        input_data = img
+    input_data = img
 
-    outputs = Model.run([input_data])
+    outputs = model.run([input_data])
 
     return outputs
 
@@ -89,23 +81,24 @@ class SharedMemoryReader:
 
     def close(self):
         """리소스 정리"""
-        self.shm.close()
+        if self.shm != None : 
+            self.shm.close()
         os.close(self.fd)
 
     def __del__(self):
-        self.close()
+        try :
+            self.close()
+        except :
+            pass
 
 def main():
-    global Model, Platform
-    parser = argparse.ArgumentParser(description='Process some integers.')
-    parser.add_argument('--model_path', type=str, default='snack_yolo8s.rknn', 
-                        help='model path, could be .pt or .rknn file')
-    parser.add_argument('--target', type=str, default='rk3588', help='target RKNPU platform')
-    parser.add_argument('--device_id', type=str, default=None, help='device id')
+    global Model
+    target = 'rk3588'
+    model_path = 'snack_yolo8s.rknn'
+    model_1_path = 'snack_yolo8s.rknn'
 
-    args = parser.parse_args()
-
-    Model, Platform = setup_model(args)
+    model = setup_rknn(model_path, target, core_mask=0x1)
+    model_1 = setup_rknn(model_1_path, target, core_mask=0x2)
 
     # 1. 설정 및 초기화
     WIDTH, HEIGHT = 640, 480
@@ -115,51 +108,58 @@ def main():
     prev_time = 0
     frame_count = 0
     start_time = time.time()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        try:
+            while True:
+                if reader.is_exit() :
+                    break
 
-    try:
-        while True:
-            if reader.is_exit() :
-                break
+                # 2. 공유 메모리에서 이미지 획득
+                pil_img = reader.get_frame()
+                #if pil_img is None:
+                #    continue
 
-            # 2. 공유 메모리에서 이미지 획득
-            pil_img = reader.get_frame()
-            #if pil_img is None:
-            #    continue
+                current_time = time.time()
+                
+                # 3. 모델 추론 함수 호출 (사용자 설계에 맞게 img 전달)
+                img_input = np.array(pil_img)
+                del pil_img
 
-            current_time = time.time()
-            
-            # 3. 모델 추론 함수 호출 (사용자 설계에 맞게 img 전달)
-            img_input = np.array(pil_img) 
+                future_0 = executor.submit(run, model, img_input)
+                future_1 = executor.submit(run, model_1, img_input)
 
-            outputs = run(img_input) 
+                outputs = future_0.result()
+                outputs_1 = future_1.result()
 
-            frame_count += 1
+                del img_input
 
-            d_t = current_time - prev_time
-            if d_t > 0:
-                fps = 1 / d_t
-            else:
-                fps = 0
+                frame_count += 1
 
-            prev_time = current_time
+                d_t = current_time - prev_time
+                if d_t > 0:
+                    fps = 1 / d_t
+                else:
+                    fps = 0
 
-            # 4. (옵션) 화면 출력용 - 디버깅 시에만 사용
-            #display_frame = cv2.cvtColor(img_input, cv2.COLOR_RGB2BGR)
-            #cv2.imshow("Shared Memory Stream", display_frame)
+                prev_time = current_time
 
-            print(f"\r[Inference] FPS: {fps:6.2f} | Device: {args.target}", end='')
+                # 4. (옵션) 화면 출력용 - 디버깅 시에만 사용
+                #display_frame = cv2.cvtColor(img_input, cv2.COLOR_RGB2BGR)
+                #cv2.imshow("Shared Memory Stream", display_frame)
 
-            #if cv2.waitKey(1) & 0xFF == ord('q'):
-            #    break
+                print(f"\r[Inference] FPS: {fps:6.2f} | Device: {target}", end='')
 
-    except KeyboardInterrupt:
-        print("\nStop signal received.")
-    finally:
-        end = time.time()
-        flow_time = end - start_time
-        print(f'avg FPS : {frame_count / flow_time}')
-        reader.close()
-        cv2.destroyAllWindows()
+                #if cv2.waitKey(1) & 0xFF == ord('q'):
+                #    break
+
+        except KeyboardInterrupt:
+            print("\nStop signal received.")
+        finally:
+            end = time.time()
+            flow_time = end - start_time
+            print(f'avg FPS : {frame_count / flow_time}')
+            reader.close()
+            cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     main()
