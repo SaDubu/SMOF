@@ -1,0 +1,29 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "type": "cppbuild",
+            "label": "C/C++: g++ build active file",
+            "command": "/usr/bin/g++",
+            "args": [
+                "-fdiagnostics-color=always",
+                "-g",
+                "${fileDirname}/*.cpp", // 현재 폴더의 모든 cpp 파일 포함
+                "-o",
+                "${fileDirname}/${fileBasenameNoExtension}",
+                "`pkg-config", "--cflags", "--libs", "opencv4`" // OpenCV 링킹 추가
+            ],
+            "options": {
+                "cwd": "${fileDirname}"
+            },
+            "problemMatcher": [
+                "$gcc"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "detail": "컴파일러: /usr/bin/g++"
+        }
+    ]
+}

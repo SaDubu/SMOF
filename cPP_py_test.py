@@ -94,11 +94,13 @@ class SharedMemoryReader:
 def main():
     global Model
     target = 'rk3588'
-    model_path = 'snack_yolo8s.rknn'
-    model_1_path = 'snack_yolo8s.rknn'
+    model_path = 'model_rknn/817.rknn'
+    model_1_path = 'model_rknn/822.rknn'
+    model_2_path = 'model_rknn/822.rknn'
 
-    model = setup_rknn(model_path, target, core_mask=0x1)
-    model_1 = setup_rknn(model_1_path, target, core_mask=0x2)
+    model = setup_rknn(model_path, target, core_mask=0x1) # core 1
+    model_1 = setup_rknn(model_1_path, target, core_mask=0x2) # core 2
+    model_2 = setup_rknn(model_2_path, target, core_mask=0x4) # core 3
 
     # 1. 설정 및 초기화
     WIDTH, HEIGHT = 640, 480
@@ -108,7 +110,7 @@ def main():
     prev_time = 0
     frame_count = 0
     start_time = time.time()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         try:
             while True:
                 if reader.is_exit() :
@@ -127,9 +129,11 @@ def main():
 
                 future_0 = executor.submit(run, model, img_input)
                 future_1 = executor.submit(run, model_1, img_input)
-
+                future_2 = executor.submit(run, model_2, img_input)
+		
                 outputs = future_0.result()
                 outputs_1 = future_1.result()
+                outputs_2 = future_2.result()
 
                 del img_input
 
