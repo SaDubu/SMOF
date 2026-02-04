@@ -2,6 +2,10 @@
 #include <iostream>
 #include <vector>
 #include <string>
+#include <thread>
+#include <mutex>
+#include <queue>
+#include <condition_variable>
 
 
 #include "MotionDetector.hpp"
@@ -76,37 +80,63 @@ std::vector<std::string> CamTest() {
     return working_indices;
 }
 
+std::queue<cv::Mat> frame_queue;
+std::mutex mtx;
+std::condition_variable cv_cond;
+bool is_running = true;
+const int MAX_QUEUE_SIZE = 5;
+
+void capture_worker(std::string pipe) {
+    cv::VideoCapture cap;
+    cap.open(pipe, cv::CAP_GSTREAMER);
+    
+    while (is_running) {
+        cv::Mat frame;
+        cap >> frame;
+        if (frame.empty()) continue;
+
+        {
+            std::lock_guard<std::mutex> lock(mtx);
+            // 큐가 너무 꽉 차면 가장 오래된 프레임을 버리고 최신걸 유지 (선택 사항)
+            if (frame_queue.size() >= MAX_QUEUE_SIZE) {
+                frame_queue.pop(); 
+            }
+            frame_queue.push(frame.clone());
+        }
+        cv_cond.notify_one(); // 데이터를 넣었으니 처리 스레드 깨우기
+    }
+}
+
 int main() {  
     std::vector<std::string> a = CamTest();
     std::string pipe = a[0];
-    cv::VideoCapture cap;
-    cap.open(pipe, cv::CAP_GSTREAMER);
-    if (!cap.isOpened()) {
-        cv::VideoCapture cap(11 + cv::CAP_V4L2);
-    }
-
-    if (cap.isOpened()) {
-        printf("connect\n");
-        fflush(stdout); // 터미널에 즉시 출력 강제
-    }
-    else {
-        return -1;
-    }
     MotionDetector detector;
     cv::Mat frame, motionLog;
 
-    while (true) {
-        cap >> frame;
-        if (frame.empty()) break;
+    std::thread t1(capture_worker, pipe);
 
-        // 모듈 사용
+    while (is_running) {
+        {
+            std::unique_lock<std::mutex> lock(mtx);
+            // 큐에 데이터가 올 때까지 대기 (CPU 점유율 감소)
+            cv_cond.wait(lock, [] { return !frame_queue.empty() || !is_running; });
+
+            if (!is_running) break;
+
+            frame = frame_queue.front();
+            frame_queue.pop();
+        }
+
         motionLog = detector.process(frame);
 
-        cv::imshow("Original", frame);
         cv::imshow("Motion Result", motionLog);
-
-        if (cv::waitKey(30) == 'q') break;
+        if (cv::waitKey(1) == 'q') {
+            is_running = false;
+            cv_cond.notify_all();
+            break;
+        }
     }
 
+    t1.join();
     return 0;
 }
