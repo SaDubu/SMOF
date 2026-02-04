@@ -7,12 +7,18 @@
 #include <queue>
 #include <condition_variable>
 
+#include <stdlib.h>
 
 #include "MotionDetector.hpp"
 
-std::vector<std::string> CamTest() {
-    std::vector<std::string> working_indices;
-    std::string video_nodes[] = {
+
+std::queue<cv::Mat> frame_queue;
+std::mutex mtx;
+std::condition_variable cv_cond;
+bool is_running = true;
+const int MAX_QUEUE_SIZE = 5;
+
+std::string video_nodes[] = {
         "/dev/video11",
         "/dev/video12",
         "/dev/video13",
@@ -37,28 +43,26 @@ std::vector<std::string> CamTest() {
         "/dev/video19"
     };
 
+std::string CamTest() {
     std::cout << "--- 비디오 장치 스캔 시작 ---" << std::endl;
 
     int total_nodes = sizeof(video_nodes) / sizeof(video_nodes[0]);
     //pipi format
     std::string pipe = ""; 
-    //"v4l2src device=" + video_nodes[number] + " ! video/x-raw,format=NV12,width=640,height=480 ! videoconvert ! appsink";
-
-    for (int i = 0; i < total_nodes; ++i) {
-        pipe = "v4l2src device=" + video_nodes[i] + " ! video/x-raw,format=NV12,width=480,height=480 ! videoconvert ! appsink";
-        // CAP_V4L2를 명시적으로 사용하여 시도
+    //https://stackoverflow.com/questions/79245401/slow-framerate-from-camera-in-opencvgstreamer-orange-pi5 <- ref
+    int i = 0;
+    for (i ; i < total_nodes; ++i) {
+        pipe = "v4l2src device=" + video_nodes[i] + " is-live=true ! video/x-raw,format=NV12,width=480,height=480 ! videoconvert ! video/x-raw,format=BGR ! appsink drop=true max-buffers=1 emit-signals=true sync=false";
         cv::VideoCapture cap;
 
         cap.open(pipe, cv::CAP_GSTREAMER);
-        
+
         if (cap.isOpened()) {
             cv::Mat frame;
             // 3. 실제 프레임 획득 시도 (가짜 노드면 여기서 실패함)
             cap >> frame; 
             
             if (!frame.empty()) {
-                std::cout << "[SUCCESS] 카메라 발견: " << video_nodes[i] << std::endl;
-                working_indices.emplace_back(pipe);
                 cap.release();
                 break; // 찾았으니 중단
             }
@@ -69,22 +73,16 @@ std::vector<std::string> CamTest() {
 
     std::cout << "--- 스캔 완료 ---" << std::endl;
 
-    if (working_indices.empty()) {
+    if (i == total_nodes) {
         std::cout << "사용 가능한 카메라 장치를 찾지 못했습니다." << std::endl;
-    } else {
-        std::cout << "발견된 장치 인덱스: ";
-        for (std::string idx : working_indices) std::cout << idx << " ";
-        std::cout << std::endl;
+        return "";
     }
 
-    return working_indices;
-}
+    std::cout << "발견된 장치 인덱스: ";
+    std::cout << video_nodes[i] << std::endl;
 
-std::queue<cv::Mat> frame_queue;
-std::mutex mtx;
-std::condition_variable cv_cond;
-bool is_running = true;
-const int MAX_QUEUE_SIZE = 5;
+    return pipe;
+}
 
 void capture_worker(std::string pipe) {
     cv::VideoCapture cap;
@@ -108,8 +106,11 @@ void capture_worker(std::string pipe) {
 }
 
 int main() {  
-    std::vector<std::string> a = CamTest();
-    std::string pipe = a[0];
+    std::string pipe = CamTest();
+    if (pipe.empty()) {
+        printf("out\n");
+        return -1;
+    }
     MotionDetector detector;
     cv::Mat frame, motionLog;
 
