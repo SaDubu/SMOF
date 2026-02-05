@@ -1,4 +1,4 @@
-#이 파일은 지금까지 구현했던 코드들을 모아둔 것임. 필요하면 여기서 따서 사용해도 됨.
+# 이 파일은 구현했던 것들 모아서 테스트 진행했던 파일.
 import cv2 as cv
 import numpy as np
 import os
@@ -21,11 +21,6 @@ except ImportError:
 
 if RKNN_AVAILABLE :
     from rknn_yolo8 import Yolov8 as ryolo8
-
-
-#지금 구축하고 있는 방식의 완성본이 될 코드이므로 모듈화에 조금 더 집중해서 진행을 해야한다.
-#일단 모듈화로 이루는 것은 나중에 진행해도 별 문제 없을 것 같고 이건 일단 기본적으로 아이디어 검증을 해야한다고 생각함.
-#이걸 잘 만들어야 나중에 모듈화를 시킬 때 큰 무리 없이 진행이 가능할 것 같음.
 
 class VisionProcessor:
     def __init__(self, kernel_size=(11, 11)):

@@ -4,7 +4,6 @@ import posix_ipc
 from PIL import Image
 import cv2
 import numpy as np
-import argparse
 import sys
 import time
 import concurrent.futures

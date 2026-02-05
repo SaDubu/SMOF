@@ -12,9 +12,9 @@
 #include "MotionDetector.hpp"
 
 
-std::queue<cv::Mat> raw_q, motion_q, final_q;
-std::mutex m1, m2, m3;
-std::condition_variable cv1, cv2, cv3;
+std::queue<cv::Mat> raw_q, motion_q, mask_q, final_q;
+std::mutex m1, m2, m3, m4;
+std::condition_variable cv1, cv2, cv3, cv4;
 bool is_running = true;
 const int MAX_QUEUE_SIZE = 15;
 
@@ -84,12 +84,12 @@ std::string CamTest() {
     return pipe;
 }
 
-cv::Mat mask_moving_area(cv::Mat motionImage) {
+cv::Mat mask_moving_area(cv::Mat motion_image) {
     cv::Mat binary, morph;
 
-    cv::threshold(motionImage, binary, 20, 255, cv::THRESH_BINARY);
+    cv::threshold(motion_image, binary, 20, 255, cv::THRESH_BINARY);
 
-    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(10, 10));
+    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(30, 30));
     cv::dilate(binary, morph, kernel);
     cv::erode(morph, morph, kernel);
 
@@ -102,6 +102,53 @@ cv::Mat mask_moving_area(cv::Mat motionImage) {
     return result;
 }
 
+//https://blog.naver.com/windrevo/221721329805
+std::vector<cv::Rect> merge_boxes(std::vector<cv::Rect>& rects) {
+    if (rects.empty()) return {};
+
+    bool changed = true;
+    //합쳐지면 처음부터 반복.
+    while (changed) {
+        changed = false;
+        for (int i = 0; i < rects.size(); i++) {
+            for (int j = i + 1; j < rects.size(); j++) {
+                if ((rects[i] & rects[j]).area() > 0) {
+                    rects[i] = rects[i] | rects[j];
+                    rects.erase(rects.begin() + j);
+                    changed = true;
+                    break;
+                }
+            }
+            if (changed) break;
+        }
+    }
+    return rects;
+}
+
+cv::Mat draw_boxes(cv::Mat& mask) {
+    cv::Mat result;
+    mask.copyTo(result);
+
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+
+    std::vector<cv::Rect> rects;
+    for (std::vector<cv::Point>& contour : contours) {
+        if (cv::contourArea(contour) < 500) continue; 
+
+        rects.emplace_back(cv::boundingRect(contour));
+    }
+
+    //겹치는 박스를 큰 박스로 하나로 정리.
+    std::vector<cv::Rect> merged = merge_boxes(rects);
+
+    for (cv::Rect& r : merged) {
+        cv::rectangle(result, r, cv::Scalar(255), 1);
+    }
+
+    return result;
+}
+
 void capture_worker(std::string pipe) {
     cv::VideoCapture cap;
     cap.open(pipe, cv::CAP_GSTREAMER);
@@ -110,7 +157,6 @@ void capture_worker(std::string pipe) {
         cv::Mat frame;
         cap >> frame;
         if (frame.empty()) continue;
-
         {
             std::lock_guard<std::mutex> lock(m1);
             if (raw_q.size() >= MAX_QUEUE_SIZE) {
@@ -124,7 +170,7 @@ void capture_worker(std::string pipe) {
 
 void diff_worker(MotionDetector detector) {
     while(is_running) {
-        cv::Mat frame, motionLog;
+        cv::Mat frame, motion_log;
         {
             std::unique_lock<std::mutex> lock(m1);
             cv1.wait(lock, [] { return !raw_q.empty() || !is_running; });
@@ -135,13 +181,13 @@ void diff_worker(MotionDetector detector) {
             raw_q.pop();
         }
 
-        motionLog = detector.process(frame);
+        motion_log = detector.process(frame);
         {
             std::lock_guard<std::mutex> lock(m2);
             if (motion_q.size() >= MAX_QUEUE_SIZE) {
                 motion_q.pop();
             }
-            motion_q.push(motionLog);
+            motion_q.push(motion_log);
         }
         cv2.notify_one();
     }
@@ -163,10 +209,34 @@ void mask_worker() {
 
         {
             std::lock_guard<std::mutex> lock(m3);
+            if (mask_q.size() >= MAX_QUEUE_SIZE) mask_q.pop();
+            mask_q.push(result);
+        }
+        cv3.notify_one();
+    }
+}
+
+
+void rect_draw_worker() {
+    while (is_running) {
+        cv::Mat local_mask;
+        {
+            std::unique_lock<std::mutex> lock(m3);
+            cv3.wait(lock, [] { return !mask_q.empty() || !is_running; });
+            if (!is_running) break;
+
+            local_mask = mask_q.front();
+            mask_q.pop();
+        }
+
+        cv::Mat result = draw_boxes(local_mask);
+
+        {
+            std::lock_guard<std::mutex> lock(m4);
             if (final_q.size() >= MAX_QUEUE_SIZE) final_q.pop();
             final_q.push(result);
         }
-        cv3.notify_one();
+        cv4.notify_one();
     }
 }
 
@@ -177,28 +247,28 @@ int main() {
         return -1;
     }
     MotionDetector detector;
-    cv::Mat frame, motionLog, result;
 
     std::thread t1(capture_worker, pipe);
     std::thread t2(diff_worker, detector);
     std::thread t3(mask_worker);
+    std::thread t4(rect_draw_worker);
 
     while (is_running) {
         cv::Mat display_frame;
         {
-            std::unique_lock<std::mutex> lock(m3);
-            cv3.wait(lock, [] { return !final_q.empty() || !is_running; });
+            std::unique_lock<std::mutex> lock(m4);
+            cv4.wait(lock, [] { return !final_q.empty() || !is_running; });
             if (!is_running) break;
 
             display_frame = final_q.front();
             final_q.pop();
         }
 
-        cv::imshow("Final Inkjet Mask", display_frame);
+        cv::imshow("boxes", display_frame);
         if (cv::waitKey(1) == 'q') is_running = false;
     }
 
-    cv1.notify_all(); cv2.notify_all(); cv3.notify_all();
-    t1.join(); t2.join(); t3.join();
+    cv1.notify_all(); cv2.notify_all(); cv3.notify_all(); cv4.notify_all();
+    t1.join(); t2.join(); t3.join(); t4.join();
     return 0;
 }
