@@ -7,7 +7,6 @@ class MotionDetector {
 public:
     MotionDetector();
     
-    // 영상을 입력받아 차영상을 반환하는 핵심 함수
     cv::Mat process(const cv::Mat& inputFrame);
 
 private:

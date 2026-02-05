@@ -29,12 +29,12 @@ public:
         
         data_size = width * height * channels;
 
-        // 1. Shared Memory 생성
+        // Shared Memory 생성
         shm_fd = shm_open(shm_name.c_str(), O_CREAT | O_RDWR, 0666);
         ftruncate(shm_fd, data_size);
         shm_ptr = (unsigned char*)mmap(0, data_size, PROT_WRITE, MAP_SHARED, shm_fd, 0);
 
-        // 2. Semaphore 초기화 (기존 것 삭제 후 생성)
+        // Semaphore 초기화
         sem_unlink(sem_full_name.c_str());
         sem_unlink(sem_empty_name.c_str());
         sem_full = sem_open(sem_full_name.c_str(), O_CREAT, 0666, 0);
@@ -42,7 +42,7 @@ public:
         sem_exit = sem_open(sem_exit_name.c_str(), O_CREAT, 0666, 0);
     }
 
-    // 객체가 사라질 때 자동으로 리소스 정리 (RAII)
+    // 객체가 사라질 때 자동으로 리소스 정리
     ~SharedMemoryManager() {
         munmap(shm_ptr, data_size);
         close(shm_fd);
@@ -58,11 +58,9 @@ public:
         if (frame.empty()) return;
 
         cv::Mat resized, rgb;
-        // 전처리: 리사이즈 및 RGB 변환
         cv::resize(frame, resized, cv::Size(width, height));
         cv::cvtColor(resized, rgb, cv::COLOR_BGR2RGB);
 
-        // 동기화 후 복사
         sem_wait(sem_empty);
         memcpy(shm_ptr, rgb.data, data_size);
         sem_post(sem_full);

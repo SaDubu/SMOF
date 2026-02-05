@@ -47,26 +47,20 @@ class SharedMemoryReader:
             self.sem_empty = posix_ipc.Semaphore(f"/{self.base_name}_empty")
             self.sem_exit = posix_ipc.Semaphore(f"/{self.base_name}_exit")
             
-            # 공유 메모리 연결 (Linux /dev/shm 기준)
+            # 공유 메모리 연결 (Linux /dev/shm)
             shm_path = f"/dev/shm/{self.base_name}_shm"
             self.fd = os.open(shm_path, os.O_RDONLY)
             self.shm = mmap.mmap(self.fd, self.size, access=mmap.ACCESS_READ)
             print(f"Successfully connected to SHM: {self.base_name}")
             
         except posix_ipc.ExistentialError:
-            raise Exception("C++ 프로그램을 먼저 실행해야 합니다 (세마포어를 찾을 수 없음).")
+            raise Exception("C++ 프로그램을 먼저 실행해야 합니다.")
 
     def get_frame(self):
-        """
-        공유 메모리에서 프레임을 가져와 PIL Image 객체로 반환합니다.
-        """
-        # C++이 데이터를 쓸 때까지 대기
         self.sem_full.acquire()
         
-        # 메모리 읽기 (복사가 아닌 뷰 참조로 성능 최적화)
         img = Image.frombytes("RGB", (self.width, self.height), self.shm)
         
-        # 읽기 완료 신호 전송 (C++에게 다음 프레임 쓰기 허가)
         self.sem_empty.release()
         
         return img
@@ -80,7 +74,6 @@ class SharedMemoryReader:
             return False
 
     def close(self):
-        """리소스 정리"""
         if self.shm != None : 
             self.shm.close()
         os.close(self.fd)
@@ -96,11 +89,9 @@ def main():
     target = 'rk3588'
     model_path = 'model_rknn/817.rknn'
     model_1_path = 'model_rknn/822.rknn'
-    model_2_path = 'model_rknn/822.rknn'
 
     model = setup_rknn(model_path, target, core_mask=0x1) # core 1
     model_1 = setup_rknn(model_1_path, target, core_mask=0x2) # core 2
-    model_2 = setup_rknn(model_2_path, target, core_mask=0x4) # core 3
 
     # 1. 설정 및 초기화
     WIDTH, HEIGHT = 640, 480
@@ -110,13 +101,13 @@ def main():
     prev_time = 0
     frame_count = 0
     start_time = time.time()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         try:
             while True:
                 if reader.is_exit() :
                     break
 
-                # 2. 공유 메모리에서 이미지 획득
+                # 공유 메모리에서 이미지 획득
                 pil_img = reader.get_frame()
                 #if pil_img is None:
                 #    continue
@@ -129,11 +120,9 @@ def main():
 
                 future_0 = executor.submit(run, model, img_input)
                 future_1 = executor.submit(run, model_1, img_input)
-                future_2 = executor.submit(run, model_2, img_input)
 		
                 outputs = future_0.result()
                 outputs_1 = future_1.result()
-                outputs_2 = future_2.result()
 
                 del img_input
 
@@ -147,7 +136,7 @@ def main():
 
                 prev_time = current_time
 
-                # 4. (옵션) 화면 출력용 - 디버깅 시에만 사용
+                # display_debug
                 #display_frame = cv2.cvtColor(img_input, cv2.COLOR_RGB2BGR)
                 #cv2.imshow("Shared Memory Stream", display_frame)
 
