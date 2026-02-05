@@ -9,13 +9,19 @@
 #include "MotionDetector.hpp"
 #include "LFQSPSC.h"
 
+struct CropJob {
+    cv::Mat frame;
+    std::vector<cv::Rect> rects;
+};
+
 LockFreeQueueSPSC<cv::Mat> raw_q;
+LockFreeQueueSPSC<cv::Mat> display_q;
 LockFreeQueueSPSC<cv::Mat> motion_q;
 LockFreeQueueSPSC<cv::Mat> mask_q;
+LockFreeQueueSPSC<std::vector<cv::Rect>> rect_q;
 LockFreeQueueSPSC<cv::Mat> final_q;
 
 bool is_running = true;
-const int MAX_QUEUE_SIZE = 15;
 
 //실제 오렌지파이 카메라 항목
 std::string video_nodes[] = {
@@ -83,7 +89,7 @@ std::string CamTest() {
     return pipe;
 }
 
-cv::Mat mask_moving_area(cv::Mat motion_image) {
+bool mask_moving_area(cv::Mat motion_image, cv::Mat& result) {
     cv::Mat binary, morph;
 
     cv::threshold(motion_image, binary, 20, 255, cv::THRESH_BINARY);
@@ -95,10 +101,19 @@ cv::Mat mask_moving_area(cv::Mat motion_image) {
     std::vector<std::vector<cv::Point>> contours;
     cv::findContours(morph, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
 
-    cv::Mat result = cv::Mat::zeros(morph.size(), CV_8UC1);
+    double total_area = 0;
+    for (std::vector<cv::Point>& contour : contours) {
+        total_area += cv::contourArea(contour);
+    }
+
+    if (total_area < 10000) {
+        return false;
+    }
+
+    result = cv::Mat::zeros(morph.size(), CV_8UC1);
     cv::drawContours(result, contours, -1, cv::Scalar(255), -1);
 
-    return result;
+    return true;
 }
 
 //https://blog.naver.com/windrevo/221721329805
@@ -124,26 +139,20 @@ std::vector<cv::Rect> merge_boxes(std::vector<cv::Rect>& rects) {
     return rects;
 }
 
-cv::Mat draw_boxes(cv::Mat& mask) {
-    cv::Mat result;
-    mask.copyTo(result);
-
+std::vector<cv::Rect> draw_boxes(cv::Mat& mask) {
+    std::vector<cv::Rect> result;
     std::vector<std::vector<cv::Point>> contours;
     cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
 
     std::vector<cv::Rect> rects;
     for (std::vector<cv::Point>& contour : contours) {
-        if (cv::contourArea(contour) < 500) continue; 
+        if (cv::contourArea(contour) < 10000) continue; 
 
         rects.emplace_back(cv::boundingRect(contour));
     }
 
     //겹치는 박스를 큰 박스로 하나로 정리.
-    std::vector<cv::Rect> merged = merge_boxes(rects);
-
-    for (cv::Rect& r : merged) {
-        cv::rectangle(result, r, cv::Scalar(255), 1);
-    }
+    result = merge_boxes(rects);
 
     return result;
 }
@@ -158,6 +167,7 @@ void capture_worker(std::string pipe) {
         cap >> frame;
         if (frame.empty()) continue;
         raw_q.Push(frame.clone());
+        display_q.Push(frame.clone());
     }
 }
 
@@ -177,26 +187,45 @@ void diff_worker(MotionDetector detector) {
 
 void mask_worker() {
     while (is_running) {
-        cv::Mat local_motion;
+        cv::Mat local_motion, result;
+        bool is_next_work = true;
 
         if (motion_q.Pop(local_motion)) {
-            cv::Mat result = mask_moving_area(local_motion);
+            is_next_work = mask_moving_area(local_motion, result);
+            if (! is_next_work) {
+                std::vector<cv::Rect> e_rect;
+                rect_q.Push(e_rect);
+                continue;
+            }
             mask_q.Push(result);
-        } else {
-            std::this_thread::yield();
-        }
+        } 
     }
 }
 
-void rect_draw_worker() {
+void rect_worker() {
     while (is_running) {
         cv::Mat local_mask;
 
         if (mask_q.Pop(local_mask)) {
-            cv::Mat result = draw_boxes(local_mask);
-            final_q.Push(result);
-        } else {
-            std::this_thread::yield();
+            std::vector<cv::Rect> result = draw_boxes(local_mask);
+            rect_q.Push(result);
+        } 
+    }
+}
+
+void draw_worker() {
+    cv::Mat canvas;
+    std::vector<cv::Rect> rects;
+    
+    while (is_running) {
+        if (rect_q.Pop(rects)) {
+            if (display_q.Pop(canvas)) {
+                for (cv::Rect& rect : rects) {
+                    cv::rectangle(canvas, rect, cv::Scalar(0, 255, 255), 2);
+                }
+
+                final_q.Push(canvas);
+            }
         }
     }
 }
@@ -212,7 +241,8 @@ int main() {
     std::thread t1(capture_worker, pipe);
     std::thread t2(diff_worker, detector);
     std::thread t3(mask_worker);
-    std::thread t4(rect_draw_worker);
+    std::thread t4(rect_worker);
+    std::thread t5(draw_worker);
 
     while (is_running) {
         cv::Mat display_frame;
@@ -224,6 +254,6 @@ int main() {
         if (cv::waitKey(1) == 'q') is_running = false;
     }
 
-    t1.join(); t2.join(); t3.join(); t4.join();
+    t1.join(); t2.join(); t3.join(); t4.join(); t5.join();
     return 0;
 }

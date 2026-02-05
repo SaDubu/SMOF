@@ -12,7 +12,7 @@ private:
         std::atomic<Node*> Next;
         Node() : Next(nullptr) {}
     };
-
+    
     alignas(64) std::atomic<Node*> Head;
     alignas(64) std::atomic<Node*> Tail;
 
