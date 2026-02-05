@@ -1,0 +1,33 @@
+{
+    "tasks": [
+        {
+            "type": "cppbuild",
+            "label": "C/C++: g++ build all files (LFQ)",
+            "command": "/usr/bin/g++",
+            "args": [
+                "-fdiagnostics-color=always",
+                "-g",
+                "-std=c++11",
+                "${fileDirname}/*.cpp", 
+                "-o",
+                "${fileDirname}/${fileBasenameNoExtension}",
+                "-I", "/usr/include/opencv4",
+                "-lopencv_core", "-lopencv_imgproc", "-lopencv_highgui", "-lopencv_imgcodecs", // OpenCV 라이브러리
+                "-lpthread",
+                "-latomic" // 16바이트 원자 연산을 위해 필수
+            ],
+            "options": {
+                "cwd": "${fileDirname}"
+            },
+            "problemMatcher": [
+                "$gcc"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "detail": "LFQ 프로젝트용 통합 빌드 설정"
+        }
+    ],
+    "version": "2.0.0"
+}

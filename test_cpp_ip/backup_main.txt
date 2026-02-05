@@ -3,17 +3,17 @@
 #include <vector>
 #include <string>
 #include <thread>
+#include <mutex>
+#include <queue>
+#include <condition_variable>
 
 #include <stdlib.h>
 
 #include "MotionDetector.hpp"
-#include "LFQSPSC.h"
 
-LockFreeQueueSPSC<cv::Mat> raw_q;
-LockFreeQueueSPSC<cv::Mat> motion_q;
-LockFreeQueueSPSC<cv::Mat> mask_q;
-LockFreeQueueSPSC<cv::Mat> final_q;
-
+std::queue<cv::Mat> raw_q, motion_q, mask_q, final_q;
+std::mutex m1, m2, m3, m4;
+std::condition_variable cv1, cv2, cv3, cv4;
 bool is_running = true;
 const int MAX_QUEUE_SIZE = 15;
 
@@ -154,54 +154,151 @@ void capture_worker(std::string pipe) {
     
     while (is_running) {
         cv::Mat frame;
-
         cap >> frame;
         if (frame.empty()) continue;
-        raw_q.Push(frame.clone());
+        {
+            std::lock_guard<std::mutex> lock(m1);
+            if (raw_q.size() >= MAX_QUEUE_SIZE) {
+                raw_q.pop(); 
+            }
+            raw_q.push(frame.clone());
+        }
+        cv1.notify_one();
     }
 }
 
 void diff_worker(MotionDetector detector) {
     while(is_running) {
         cv::Mat frame, motion_log;
+        {
+            std::unique_lock<std::mutex> lock(m1);
+            cv1.wait(lock, [] { return !raw_q.empty() || !is_running; });
 
-        if (raw_q.Pop(frame)) {
-            motion_log = detector.process(frame);
-            motion_q.Push(motion_log);
+            if (!is_running) break;
+
+            frame = raw_q.front();
+            raw_q.pop();
         }
-        else {
-            std::this_thread::yield();
+
+        motion_log = detector.process(frame);
+        {
+            std::lock_guard<std::mutex> lock(m2);
+            if (motion_q.size() >= MAX_QUEUE_SIZE) {
+                motion_q.pop();
+            }
+            motion_q.push(motion_log);
         }
+        cv2.notify_one();
     }
 }
 
 void mask_worker() {
     while (is_running) {
         cv::Mat local_motion;
+        {
+            std::unique_lock<std::mutex> lock(m2);
+            cv2.wait(lock, [] { return !motion_q.empty() || !is_running; });
+            if (!is_running) break;
 
-        if (motion_q.Pop(local_motion)) {
-            cv::Mat result = mask_moving_area(local_motion);
-            mask_q.Push(result);
-        } else {
-            std::this_thread::yield();
+            local_motion = motion_q.front();
+            motion_q.pop();
         }
+
+        cv::Mat result = mask_moving_area(local_motion);
+
+        {
+            std::lock_guard<std::mutex> lock(m3);
+            if (mask_q.size() >= MAX_QUEUE_SIZE) mask_q.pop();
+            mask_q.push(result);
+        }
+        cv3.notify_one();
     }
 }
 
 void rect_draw_worker() {
     while (is_running) {
         cv::Mat local_mask;
+        {
+            std::unique_lock<std::mutex> lock(m3);
+            cv3.wait(lock, [] { return !mask_q.empty() || !is_running; });
+            if (!is_running) break;
 
-        if (mask_q.Pop(local_mask)) {
-            cv::Mat result = draw_boxes(local_mask);
-            final_q.Push(result);
-        } else {
-            std::this_thread::yield();
+            local_mask = mask_q.front();
+            mask_q.pop();
         }
+
+        cv::Mat result = draw_boxes(local_mask);
+
+        {
+            std::lock_guard<std::mutex> lock(m4);
+            if (final_q.size() >= MAX_QUEUE_SIZE) final_q.pop();
+            final_q.push(result);
+        }
+        cv4.notify_one();
     }
 }
 
+#include <iostream>
+#include <thread>
+#include <vector>
+#include <chrono>
+#include <numeric>
+#include "LFQSPSC.h"
+
+/**
+ * @brief SPSC 큐의 무결성을 테스트하는 함수
+ * @param test_count 테스트할 데이터 개수 (예: 1,000,000)
+ */
+void TestSPSCQueue(const int test_count) {
+    LockFreeQueueSPSC<int> queue;
+    
+    long long push_sum = 0;
+    long long pop_sum = 0;
+    int pop_count = 0;
+
+    std::cout << "--- SPSC Queue Test Start (" << test_count << " items) ---" << std::endl;
+    auto start_time = std::chrono::high_resolution_clock::now();
+
+    std::thread producer([&]() {
+        for (int i = 1; i <= test_count; ++i) {
+            push_sum += i;
+            queue.Push(i);
+        }
+    });
+
+    std::thread consumer([&]() {
+        int value;
+        while (pop_count < test_count) {
+            if (queue.Pop(value)) {
+                pop_sum += value;
+                pop_count++;
+            } else {
+                std::this_thread::yield();
+            }
+        }
+    });
+
+    producer.join();
+    consumer.join();
+
+    auto end_time = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> elapsed = end_time - start_time;
+
+    std::cout << "Elapsed Time: " << elapsed.count() << "s" << std::endl;
+    std::cout << "Push Sum: " << push_sum << " | Pop Sum: " << pop_sum << std::endl;
+    std::cout << "Processed Items: " << pop_count << std::endl;
+
+    if (push_sum == pop_sum && pop_count == test_count) {
+        std::cout << ">>> RESULT: SUCCESS (No data loss or corruption)" << std::endl;
+    } else {
+        std::cout << ">>> RESULT: FAILURE (Data mismatch detected!)" << std::endl;
+    }
+    std::cout << "-----------------------------------------------" << std::endl;
+}
+
 int main() {  
+    TestSPSCQueue(2147483647);
+    return 0;
     std::string pipe = CamTest();
     if (pipe.empty()) {
         printf("out\n");
@@ -216,14 +313,20 @@ int main() {
 
     while (is_running) {
         cv::Mat display_frame;
-        if (!final_q.Pop(display_frame)) {
-            continue;
+        {
+            std::unique_lock<std::mutex> lock(m4);
+            cv4.wait(lock, [] { return !final_q.empty() || !is_running; });
+            if (!is_running) break;
+
+            display_frame = final_q.front();
+            final_q.pop();
         }
 
         cv::imshow("boxes", display_frame);
         if (cv::waitKey(1) == 'q') is_running = false;
     }
 
+    cv1.notify_all(); cv2.notify_all(); cv3.notify_all(); cv4.notify_all();
     t1.join(); t2.join(); t3.join(); t4.join();
     return 0;
 }
