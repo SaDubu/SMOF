@@ -93,7 +93,6 @@ def main():
     model = setup_rknn(model_path, target, core_mask=0x1) # core 1
     model_1 = setup_rknn(model_1_path, target, core_mask=0x2) # core 2
 
-    # 1. 설정 및 초기화
     WIDTH, HEIGHT = 640, 480
     reader = SharedMemoryReader("yolo_frame", WIDTH, HEIGHT)
 
@@ -114,7 +113,6 @@ def main():
 
                 current_time = time.time()
                 
-                # 3. 모델 추론 함수 호출 (사용자 설계에 맞게 img 전달)
                 img_input = np.array(pil_img)
                 del pil_img
 
