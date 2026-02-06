@@ -5,13 +5,13 @@
 
 class MotionDetector {
 public:
-    MotionDetector();
+    MotionDetector() {};
     
     cv::Mat process(const cv::Mat& inputFrame);
 
 private:
     cv::Mat prevGray; // t-1 시점의 그레이스케일 이미지 저장
-    bool isFirstFrame;
+    bool isFirstFrame = true;
 };
 
 #endif

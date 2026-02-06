@@ -31,18 +31,13 @@ def get_yaml_info(yaml_path):
     
     names = data.get('names', {})
     
-    # 1. ID 리스트 생성 (키 값들을 정렬하여 리스트로 만듦)
-    # 예: [0, 1, 2, ...]
     id_list = sorted(names.keys())
     
-    # 2. 클래스명 리스트 생성 (ID 순서에 맞춰서 이름 추출)
-    # 예: ("(주)굿푸드블루베리엔치즈", "item2", ...)
     class_list = [names[i] for i in id_list]
     
     return tuple(class_list), id_list
 
-# 실제 적용
-yaml_file = "data.yaml"  # 파일 경로를 입력하세요
+yaml_file = "data.yaml" 
 CLASSES, coco_id_list = get_yaml_info(yaml_file)
 
 
@@ -97,7 +92,6 @@ def nms_boxes(boxes, scores):
     return keep
 
 def dfl(position):
-    # Distribution Focal Loss (DFL)
     import torch
     x = torch.tensor(position)
     n,c,h,w = x.shape
@@ -148,7 +142,6 @@ def post_process(input_data):
     classes_conf = np.concatenate(classes_conf)
     scores = np.concatenate(scores)
 
-    # filter according to threshold
     boxes, classes, scores = filter_boxes(boxes, scores, classes_conf)
 
     # nms
@@ -177,25 +170,15 @@ def post_process(input_data):
 def add_post_process(input_data):
     boxes, scores, classes_conf = [], [], []
     
-    # 1701 채널 = 64(DFL 좌표) + 1637(클래스 점수)
-    # input_data는 [ (1,1701,60,60), (1,1701,30,30), (1,1701,15,15) ] 형태입니다.
     for branch_data in input_data:
-        # 1. 하나의 텐서에서 좌표와 클래스 점수를 잘라냅니다.
-        # 좌표 데이터 (앞 64채널)
         b_box_raw = branch_data[:, :64, :, :] 
-        # 클래스 데이터 (64번 채널부터 끝까지)
         b_cls_raw = branch_data[:, 64:, :, :] 
         
-        # 2. 박스 좌표 복구 (기존 box_process 사용)
-        # 480 해상도에 맞춰 60, 30, 15 그리드를 자동으로 계산합니다.
         boxes.append(box_process(b_box_raw))
         
-        # 3. 클래스 정보 및 스코어용 더미 데이터 추가
         classes_conf.append(b_cls_raw)
-        # filter_boxes 함수 구조를 유지하기 위해 1로 채워진 스코어 텐서를 생성합니다.
         scores.append(np.ones_like(b_cls_raw[:, :1, :, :], dtype=np.float32))
 
-    # --- 여기서부터는 기존 sp_flatten 로직을 그대로 사용합니다 ---
     def sp_flatten(_in):
         ch = _in.shape[1]
         _in = _in.transpose(0, 2, 3, 1)
@@ -209,10 +192,8 @@ def add_post_process(input_data):
     classes_conf = np.concatenate(classes_conf)
     scores = np.concatenate(scores)
 
-    # filter_boxes를 통해 threshold 적용
     boxes, classes, scores = filter_boxes(boxes, scores, classes_conf)
 
-    # NMS (scalar index 에러 방지 버전)
     nboxes, nclasses, nscores = [], [], []
     for c_id in set(classes):
         inds = np.where(classes == c_id)
@@ -223,11 +204,10 @@ def add_post_process(input_data):
 
         if len(keep) != 0:
             nboxes.append(b[keep])
-            # 에러 방지: c 대신 np.full 사용
             nclasses.append(np.full(len(keep), c_id))
             nscores.append(s[keep])
 
-    if not nboxes: # 리스트가 비어있는지 체크
+    if not nboxes:
         return None, None, None
 
     boxes = np.concatenate(nboxes)
@@ -248,7 +228,6 @@ def add_draw(image, boxes, scores, classes):
     '''
     orange pi에서 한글이 나오지 않아서 만듬.
     '''
-    # 1. OpenCV(BGR)를 PIL(RGB)로 변환
     img_pil = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
     draw_pil = ImageDraw.Draw(img_pil)
     
@@ -264,16 +243,13 @@ def add_draw(image, boxes, scores, classes):
         
         label_text = CLASSES[cl]
         full_label = f"{label_text} {score:.2f}"
-        
-        # 3. 박스 그리기 (PIL에서 직접 수행)
-        draw_pil.rectangle([y1, x1, y2, x2], outline=(255, 0, 0), width=3) # 기존 변수명 기준
 
-        # 4. 한글 텍스트 배경 및 글자 그리기
-        # 텍스트가 박스 밖으로 나가지 않게 y1 좌표 위쪽에 그림
+        draw_pil.rectangle([y1, x1, y2, x2], outline=(255, 0, 0), width=3) 
+
+
         text_pos = (y1, x1 - 25) 
-        draw_pil.text(text_pos, full_label, font=font, fill=(255, 255, 255)) # 흰색 글씨
+        draw_pil.text(text_pos, full_label, font=font, fill=(255, 255, 255))
 
-    # 5. 최종본을 다시 OpenCV(BGR)로 변환
     final_image = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
     image[:] = final_image
 
@@ -327,31 +303,18 @@ import time
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Process some integers.')
-    
-    # 1. model_path: 필수(required)를 해제하고 기본 경로 설정
     parser.add_argument('--model_path', type=str, default='snack_yolo8s.rknn', 
                         help='model path, could be .pt or .rknn file')
-    
-    # 2. target: 기본값을 rk3588로 변경
     parser.add_argument('--target', type=str, default='rk3588', help='target RKNPU platform')
     parser.add_argument('--device_id', type=str, default=None, help='device id')
-    
     parser.add_argument('--img_show', action='store_true', default=False, help='draw the result and show')
-    
-    # 3. img_save: 기본값을 True로 변경 (인자 없이도 저장되도록 함)
     parser.add_argument('--img_save', action='store_true', default=True, help='save the result')
-
-    # data params
     parser.add_argument('--anno_json', type=str, default='../../../datasets/COCO/annotations/instances_val2017.json', help='coco annotation path')
-    
-    # 4. img_folder: 기본 경로를 지정하신 위치로 변경
     parser.add_argument('--img_folder', type=str, default='../../Documents/test_img', help='img folder path')
-    
     parser.add_argument('--coco_map_test', action='store_true', help='enable coco map test')
 
     args = parser.parse_args()
 
-    # init model
     model, platform = setup_model(args)
 
     file_list = sorted(os.listdir(args.img_folder))
@@ -378,10 +341,7 @@ if __name__ == '__main__':
     txt_file_path = None
 
     if args.img_save :
-        # 1. 저장할 경로 설정 (result/yolov8)
         save_path = os.path.join('result', 'yolov8')
-
-        # 2. 폴더가 없으면 생성 (exist_ok=True는 이미 폴더가 있어도 에러를 내지 않습니다)
         os.makedirs(save_path, exist_ok=True)
 
         txt_file_path = os.path.join(save_path, 'how_many_object.txt')
@@ -390,9 +350,6 @@ if __name__ == '__main__':
             os.remove(txt_file_path)
 
     for i in range(img_list_len):
-        # \033[K 는 현재 커서 위치부터 줄 끝까지 지우라는 명령어입니다.
-        #print(f'\r\033[Kinfer {i+1}/{img_list_len}', end='')
-
         img_name = img_list[i]
 
         img_name = img_list[i]
@@ -404,12 +361,6 @@ if __name__ == '__main__':
         img_src = cv2.imread(img_path)
         if img_src is None:
             continue
-
-        '''
-        # using for test input dumped by C.demo
-        img_src = np.fromfile('./input_b/demo_c_input_hwc_rgb.txt', dtype=np.uint8).reshape(640,640,3)
-        img_src = cv2.cvtColor(img_src, cv2.COLOR_RGB2BGR)
-        '''
 
         img_basename = os.path.splitext(img_name)[0]
         label_path = f'../../Documents/test_label/{img_basename}.txt'
@@ -432,12 +383,10 @@ if __name__ == '__main__':
 
         start_tick = time.time()
 
-        # Due to rga init with (0,0,0), we using pad_color (0,0,0) instead of (114, 114, 114)
         pad_color = (0,0,0)
         img = co_helper.letter_box(im= img_src.copy(), new_shape=(IMG_SIZE[1], IMG_SIZE[0]), pad_color=(0,0,0))
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-        # preprocee if not rknn model
         if platform in ['pytorch', 'onnx']:
             input_data = img.transpose((2,0,1))
             input_data = input_data.reshape(1,*input_data.shape).astype(np.float32)
@@ -455,13 +404,6 @@ if __name__ == '__main__':
             img_p = img_src.copy()
             if boxes is not None:
                 add_draw(img_p, co_helper.get_real_box(boxes), scores, classes)
-                #h, w, _ = img_src.shape
-                #scale_w = w / IMG_SIZE[0]
-                #scale_h = h / IMG_SIZE[1]
-                #boxes[:, [0, 2]] *= scale_w
-                #boxes[:, [1, 3]] *= scale_h
-                
-                #add_draw(img_p, boxes, scores, classes)
 
             if args.img_save and boxes is not None:
                 result_path = os.path.join(save_path, img_name)
@@ -493,7 +435,6 @@ if __name__ == '__main__':
         end_tick = time.time()
 
         if boxes is not None:
-        # RKNN boxes는 이미 스케일링된 픽셀 좌표 [x1, y1, x2, y2]라고 가정
             for gt in processed_gts:
                 matched = False
                 for p_idx, (p_box, p_cls) in enumerate(zip(boxes, classes)):
@@ -515,7 +456,6 @@ if __name__ == '__main__':
                         'gt_id': gt['cls'], 'pred_id': None
                     })
 
-            # 3. 추가 검출(FP) 판별
             for p_idx, (p_box, p_cls) in enumerate(zip(boxes, classes)):
                 if p_idx not in matched_preds_idx:
                     image_record['objects'].append({
@@ -523,15 +463,12 @@ if __name__ == '__main__':
                         'gt_id': None, 'pred_id': int(p_cls)
                     })
         else:
-            # 검출 결과가 아예 없는 경우 모든 GT는 FN
             for gt in processed_gts:
                 image_record['objects'].append({'status': 'Missed (FN)', 'gt_id': gt['cls'], 'pred_id': None})
 
-        # 결과 요약 및 에러 이미지 수집
         total_tp_count += img_tp
         all_data_logs.append(image_record)
         
-        # 예측 개수와 TP가 다르면 에러로 간주
         pred_count = len(boxes) if boxes is not None else 0
         if pred_count > img_tp or len(gt_list) > img_tp:
             error_img_path_list.append(os.path.join(save_path, img_name))
@@ -540,11 +477,9 @@ if __name__ == '__main__':
         total_time += curr_time
         processed_frames += 1
 
-        # 개별 프레임 FPS 출력 (선택 사항)
         print('Inference {}/{} - Time: {:.4f}s, FPS: {:.2f}'.format(
             i+1, len(img_list), curr_time, 1/curr_time), end='\r')
 
-    # 루프 종료 후 평균 FPS 출력
     if processed_frames > 0:
         avg_fps = processed_frames / total_time
         print('\n' + '='*30)
@@ -553,11 +488,9 @@ if __name__ == '__main__':
         print('='*30)
 
         recall = (total_tp_count / total_gt_count * 100) if total_gt_count > 0 else 0
-        print(f"\n[최종 인식률 보고서]")
         print(f"전체 정답 객체 수: {total_gt_count}개 / 검출 성공: {total_tp_count}개")
         print(f"인식률(Recall): {recall:.2f}%")
 
-    # calculate maps
     if args.coco_map_test is True:
         pred_json = args.model_path.split('.')[-2]+ '_{}'.format(platform) +'.json'
         pred_json = pred_json.split('/')[-1]

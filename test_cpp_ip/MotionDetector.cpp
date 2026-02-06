@@ -1,7 +1,5 @@
 #include "MotionDetector.hpp"
 
-MotionDetector::MotionDetector() : isFirstFrame(true) {}
-
 cv::Mat MotionDetector::process(const cv::Mat& inputFrame) {
     cv::Mat currentGray, diff;
 
