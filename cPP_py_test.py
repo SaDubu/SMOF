@@ -92,7 +92,7 @@ def main():
     model = setup_rknn(model_path, target, core_mask=0x1) # core 1
     model_1 = setup_rknn(model_1_path, target, core_mask=0x2) # core 2
 
-    WIDTH, HEIGHT = 640, 480
+    WIDTH, HEIGHT = 480, 480
     reader = SharedMemoryReader("yolo_frame", WIDTH, HEIGHT)
 
     print(">>> Python Inference Loop Started...")

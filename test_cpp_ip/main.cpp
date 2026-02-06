@@ -8,20 +8,20 @@
 
 #include "MotionDetector.hpp"
 #include "LFQSPSC.h"
+#include "SharedMemoryManager.hpp"
 
-struct CropJob {
-    cv::Mat frame;
-    std::vector<cv::Rect> rects;
-};
+LockFreeQueueSPSC<std::vector<cv::Mat>> chips_q;
 
 LockFreeQueueSPSC<cv::Mat> raw_q;
 LockFreeQueueSPSC<cv::Mat> display_q;
 LockFreeQueueSPSC<cv::Mat> motion_q;
 LockFreeQueueSPSC<cv::Mat> mask_q;
 LockFreeQueueSPSC<std::vector<cv::Rect>> rect_q;
+LockFreeQueueSPSC<std::vector<cv::Rect>> bbox_q;
 LockFreeQueueSPSC<cv::Mat> final_q;
 
 bool is_running = true;
+cv::Size target_size(480, 480);
 
 //실제 오렌지파이 카메라 항목
 std::string video_nodes[] = {
@@ -139,7 +139,7 @@ std::vector<cv::Rect> merge_boxes(std::vector<cv::Rect>& rects) {
     return rects;
 }
 
-std::vector<cv::Rect> draw_boxes(cv::Mat& mask) {
+std::vector<cv::Rect> get_boxes(cv::Mat& mask) {
     std::vector<cv::Rect> result;
     std::vector<std::vector<cv::Point>> contours;
     cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
@@ -198,6 +198,9 @@ void mask_worker() {
                 continue;
             }
             mask_q.Push(result);
+        }
+        else {
+            std::this_thread::yield();
         } 
     }
 }
@@ -207,9 +210,12 @@ void rect_worker() {
         cv::Mat local_mask;
 
         if (mask_q.Pop(local_mask)) {
-            std::vector<cv::Rect> result = draw_boxes(local_mask);
+            std::vector<cv::Rect> result = get_boxes(local_mask);
             rect_q.Push(result);
         } 
+        else {
+            std::this_thread::yield();
+        }
     }
 }
 
@@ -218,7 +224,7 @@ void draw_worker() {
     std::vector<cv::Rect> rects;
     
     while (is_running) {
-        if (rect_q.Pop(rects)) {
+        if (bbox_q.Pop(rects)) {
             if (display_q.Pop(canvas)) {
                 for (cv::Rect& rect : rects) {
                     cv::rectangle(canvas, rect, cv::Scalar(0, 255, 255), 2);
@@ -226,6 +232,47 @@ void draw_worker() {
 
                 final_q.Push(canvas);
             }
+        }
+        else {
+            std::this_thread::yield();
+        }
+    }
+}
+
+void crop_worker() {
+    cv::Mat frame;
+    std::vector<cv::Rect> rects;
+    int pad = 10;
+    int w_h_pad = pad * 2;
+
+    while (is_running) {
+        if (rect_q.Pop(rects)) {
+            if (display_q.Pop(frame)) {
+                std::vector<cv::Mat> resized_chips;
+                int stand_cols = frame.cols;
+                int stand_rows = frame.rows;
+
+                for (cv::Rect& rect : rects) {
+                    rect.x -= pad;
+                    rect.y -= pad;
+                    rect.width += w_h_pad;
+                    rect.height += w_h_pad;
+                    cv::Rect safe_rect = rect & cv::Rect(0, 0, stand_cols, stand_rows);
+
+                    if (safe_rect.width > 0 && safe_rect.height > 0) {
+                        cv::Mat roi = frame(safe_rect);
+                        cv::Mat resized;
+
+                        cv::resize(roi, resized, target_size, 0, 0, cv::INTER_LINEAR);
+
+                        resized_chips.emplace_back(resized);
+                    }
+                }
+                chips_q.Push(resized_chips);
+            }
+        }
+        else {
+            std::this_thread::yield();
         }
     }
 }
@@ -237,16 +284,25 @@ int main() {
         return -1;
     }
     MotionDetector detector;
+    SharedMemoryManager smm("yolo_frame", 480, 480);
 
     std::thread t1(capture_worker, pipe);
     std::thread t2(diff_worker, detector);
     std::thread t3(mask_worker);
     std::thread t4(rect_worker);
-    std::thread t5(draw_worker);
+    std::thread t5(crop_worker);
+    //std::thread t5(draw_worker);
 
     while (is_running) {
         cv::Mat display_frame;
+        std::vector<cv::Mat> frames;
         if (!final_q.Pop(display_frame)) {
+            if (chips_q.Pop(frames)) {
+                for (cv::Mat& frame : frames) {
+                    smm.sendFrame(frame);
+                }
+                //printf("frame count is {%zu}\n", frames.size());
+            }
             continue;
         }
 
