@@ -1,3 +1,6 @@
+#ifndef SHARED_MEMORY_MANAGER_HPP
+#define SHARED_MEMORY_MANAGER_HPP
+
 #include <iostream>
 #include <string>
 #include <fcntl.h>
@@ -70,3 +73,5 @@ public:
         sem_post(sem_exit);
     }
 };
+
+#endif

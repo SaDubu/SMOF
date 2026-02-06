@@ -1,0 +1,37 @@
+#ifndef LABOR_MANAGER_HPP
+#define LABOR_MANAGER_HPP
+
+#include <vector>
+#include <opencv2/opencv.hpp>
+#include <thread>
+
+class MotionDetector; 
+template <typename T> class LockFreeQueueSPSC;
+
+class LaborManager {
+public :
+    LaborManager(bool* is_running_ptr);
+
+    void capture_worker(std::string& pipe, LockFreeQueueSPSC<cv::Mat>& raw_q, LockFreeQueueSPSC<cv::Mat>& display_q);
+
+    void diff_worker(MotionDetector& detector, LockFreeQueueSPSC<cv::Mat>& raw_q, LockFreeQueueSPSC<cv::Mat>& motion_q);
+
+    void mask_worker(LockFreeQueueSPSC<cv::Mat>& motion_q, LockFreeQueueSPSC<std::vector<cv::Rect>>& rect_q, LockFreeQueueSPSC<cv::Mat>& mask_q);
+
+    void rect_worker(LockFreeQueueSPSC<cv::Mat>& mask_q, LockFreeQueueSPSC<std::vector<cv::Rect>>& rect_q);
+
+    void draw_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>& bbox_q, LockFreeQueueSPSC<cv::Mat>& display_q, LockFreeQueueSPSC<cv::Mat>& final_q);
+
+    void crop_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>& rect_q, LockFreeQueueSPSC<cv::Mat>& display_q, LockFreeQueueSPSC<std::vector<cv::Mat>>& chips_q);
+
+private :
+    bool* m_is_running;
+
+    bool mask_moving_area(cv::Mat& motion_image, cv::Mat& result);
+
+    std::vector<cv::Rect> merge_boxes(std::vector<cv::Rect>& rects);
+
+    std::vector<cv::Rect> get_boxes(cv::Mat& mask);
+};
+
+#endif

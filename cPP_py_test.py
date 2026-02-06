@@ -121,7 +121,7 @@ def main():
                 outputs = future_0.result()
                 outputs_1 = future_1.result()
 
-                del img_input
+                #del img_input
 
                 frame_count += 1
 
@@ -134,13 +134,13 @@ def main():
                 prev_time = current_time
 
                 # display_debug
-                #display_frame = cv2.cvtColor(img_input, cv2.COLOR_RGB2BGR)
-                #cv2.imshow("Shared Memory Stream", display_frame)
+                display_frame = cv2.cvtColor(img_input, cv2.COLOR_RGB2BGR)
+                cv2.imshow("Shared Memory Stream", display_frame)
 
                 print(f"\r[Inference] FPS: {fps:6.2f} | Device: {target}", end='')
 
-                #if cv2.waitKey(1) & 0xFF == ord('q'):
-                #    break
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
 
         except KeyboardInterrupt:
             print("\nStop signal received.")
