@@ -86,8 +86,8 @@ class SharedMemoryReader:
 def main():
     global Model
     target = 'rk3588'
-    model_path = 'model_rknn/817.rknn'
-    model_1_path = 'model_rknn/822.rknn'
+    model_path = 'model_rknn/top.rknn'
+    model_1_path = 'model_rknn/bottom.rknn'
 
     model = setup_rknn(model_path, target, core_mask=0x1) # core 1
     model_1 = setup_rknn(model_1_path, target, core_mask=0x2) # core 2

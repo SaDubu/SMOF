@@ -167,6 +167,121 @@ def post_process(input_data):
 
     return boxes, classes, scores
 
+def sigmoid(x):
+    return 1 / (1 + np.exp(-x))
+
+def dfl_optimized(x):
+    # x의 형태가 (N, 64, H, W)이든 (N, 64)이든 대응 가능하게 수정
+    shape = x.shape
+    if len(shape) == 4: # 기존 방식 (전체 이미지 처리 시)
+        n, c, h, w = shape
+        x = x.reshape(n, 4, 16, h, w).transpose(0, 1, 3, 4, 2)
+    elif len(shape) == 2: # 최적화 방식 (필터링된 데이터 처리 시)
+        n, c = shape
+        x = x.reshape(n, 4, 16)
+    else:
+        raise ValueError(f"예상치 못한 데이터 형태입니다: {shape}")
+
+    # Softmax 연산 (16개 위치 확률 분포)
+    # 수치 안정성을 위해 max 값을 빼주는 것이 좋지만, 속도를 위해 생략하거나 아래처럼 작성
+    exp_x = np.exp(x - np.max(x, axis=-1, keepdims=True))
+    x = exp_x / np.sum(exp_x, axis=-1, keepdims=True)
+
+    # 가중치 [0, 1, 2, ..., 15] 곱해서 합산
+    acc_matrix = np.arange(16, dtype=np.float32)
+    x = np.sum(x * acc_matrix, axis=-1)
+    
+    return x # (N, 4) 형태로 반환됨
+
+def box_process_optimized(position_raw, mask_indices, grid_h, grid_w, img_size):
+    """
+    전체 그리드를 생성하지 않고, 선택된 인덱스(mask_indices)에 대해서만 
+    박스 좌표를 복원합니다.
+    """
+    # 1. DFL 처리 (64채널 -> 4채널: top, left, bottom, right)
+    # position_raw shape: (N, 64)
+    pos = dfl_optimized(position_raw) # dfl 함수가 (N, 64) 입력을 지원해야 함
+    
+    # 2. 선택된 위치의 그리드 좌표 생성
+    # mask_indices는 (y_coords, x_coords) 형태임
+    rows, cols = mask_indices
+    grid = np.stack((cols, rows), axis=1) # (N, 2) -> x, y 순서
+    
+    # 3. 스트라이드 계산
+    stride_y = img_size[1] // grid_h
+    stride_x = img_size[0] // grid_w
+    stride = np.array([stride_x, stride_y])
+
+    # 4. YOLOv8 박스 복원 공식 (Center + 0.5 기반)
+    # pos[:, 0:2]는 좌상단 거리, pos[:, 2:4]는 우하단 거리
+    box_xy1 = grid + 0.5 - pos[:, 0:2]
+    box_xy2 = grid + 0.5 + pos[:, 2:4]
+    
+    # 5. 이미지 크기에 맞게 스케일링
+    xyxy = np.concatenate((box_xy1 * stride, box_xy2 * stride), axis=1)
+    
+    return xyxy
+
+def weck_post_process(input_data, conf_threshold=0.25) :
+    logit_threshold = -np.log(1 / conf_threshold - 1) # 로짓 임계값 역산
+    
+    all_boxes, all_scores, all_class_ids = [], [], []
+
+    for branch_data in input_data:
+        # 1. 기본 정보 추출
+        grid_h, grid_w = branch_data.shape[2:4]
+        b_box_raw = branch_data[0, :64, :, :]
+        b_cls_raw = branch_data[0, 64:, :, :]
+
+        # 2. 로짓 단계에서 미리 필터링 (병목 제거 1단계)
+        max_logits = np.max(b_cls_raw, axis=0)
+        mask = max_logits > logit_threshold
+        
+        if not np.any(mask):
+            continue
+
+        # 3. 유효한 인덱스와 해당 데이터만 추출
+        mask_indices = np.where(mask) # (y_indices, x_indices)
+        matched_box_raw = b_box_raw[:, mask].T # (N, 64)
+        matched_cls_raw = b_cls_raw[:, mask].T # (N, Class_count)
+
+        # 4. 클래스 확률 및 스코어 계산 (병목 제거 2단계)
+        probs = 1 / (1 + np.exp(-matched_cls_raw))
+        scores = np.max(probs, axis=1)
+        class_ids = np.argmax(probs, axis=1)
+
+        # 5. 최적화된 박스 좌표 복원 (병목 제거 3단계)
+        boxes = box_process_optimized(matched_box_raw, mask_indices, grid_h, grid_w, IMG_SIZE)
+
+        all_boxes.append(boxes)
+        all_scores.append(scores)
+        all_class_ids.append(class_ids)
+
+    if not all_boxes:
+        return None, None, None
+
+    # 데이터 통합
+    boxes = np.concatenate(all_boxes)
+    scores = np.concatenate(all_scores)
+    classes = np.concatenate(all_class_ids)
+
+    # NMS (이미 데이터가 압축되어 매우 빠름)
+    nboxes, nclasses, nscores = [], [], []
+    for c_id in np.unique(classes):
+        inds = np.where(classes == c_id)
+        b, s = boxes[inds], scores[inds]
+        
+        keep = nms_boxes(b, s)
+        if len(keep) != 0:
+            nboxes.append(b[keep])
+            nclasses.append(np.full(len(keep), c_id))
+            nscores.append(s[keep])
+
+    if not nboxes:
+        return None, None, None
+
+    return np.concatenate(nboxes), np.concatenate(nclasses), np.concatenate(nscores)
+
 def add_post_process(input_data):
     boxes, scores, classes_conf = [], [], []
     
@@ -176,9 +291,15 @@ def add_post_process(input_data):
         
         boxes.append(box_process(b_box_raw))
         
-        classes_conf.append(b_cls_raw)
-        scores.append(np.ones_like(b_cls_raw[:, :1, :, :], dtype=np.float32))
+        #b_cls_prob = sigmoid(b_cls_raw)
 
+        #classes_conf.append(b_cls_prob)
+        classes_conf.append(b_cls_raw)
+
+        #b_score = np.max(b_cls_prob, axis=1, keepdims=True)
+        #scores.append(b_score)
+        scores.append(np.ones_like(b_cls_raw[:, :1, :, :], dtype=np.float32))
+        
     def sp_flatten(_in):
         ch = _in.shape[1]
         _in = _in.transpose(0, 2, 3, 1)

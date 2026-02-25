@@ -21,6 +21,7 @@ LockFreeQueueSPSC<cv::Mat> motion_q;
 LockFreeQueueSPSC<cv::Mat> mask_q;
 LockFreeQueueSPSC<std::vector<cv::Rect>> rect_q;
 LockFreeQueueSPSC<std::vector<cv::Rect>> bbox_q;
+LockFreeQueueSPSC<cv::Mat> filtered_frame_q;
 LockFreeQueueSPSC<cv::Mat> final_q;
 
 bool is_running = true;
@@ -92,7 +93,68 @@ std::string CamTest() {
     return pipe;
 }
 
-int main() {  
+int get_images(std::string path, LockFreeQueueSPSC<cv::Mat>* raw_q) {
+    std::vector<std::string> paths;
+
+    cv::glob(path, paths, false);
+
+    size_t count = 0;
+
+    if (paths.empty()) {
+        std::cerr << "이미지 파일을 찾을 수 없습니다: " << path << std::endl;
+        return -1;
+    }
+
+    for (std::string& p : paths) {
+        cv::Mat img = cv::imread(p);
+
+        if (img.empty()) {
+            std::cerr << "읽기 실패: " << p << std::endl;
+            continue;
+        }
+
+        raw_q->Push(img);
+        ++count;
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+
+    std::cout << "images num : " << count << std::endl;
+
+    return 0;
+}
+
+int test() {
+    std::string images_file_path = "test_folder/test/*.jpg";
+
+    std::thread t1(get_images, images_file_path, &raw_q);
+
+    LaborManager lm(&is_running);
+    SharedMemoryManager smm("yolo_frame", 480, 480);
+    std::vector<Detection> recive_output;
+
+    while (is_running) {
+        cv::Mat image;
+
+        if (raw_q.Pop(image)) {
+            smm.sendFrame(image);
+        }
+
+        recive_output = smm.receiveYoloResult();
+
+        if (!recive_output.empty()) {
+            for (Detection& det : recive_output) {
+                std::cout << " - Confidence   : " << (det.confidence) << std::endl;
+                std::cout << " - Class ID     : " << (int)det.class_id << std::endl;
+            }
+        }
+    }
+
+    t1.join();
+
+    return 0;
+}
+
+int run() {
     std::string pipe = CamTest();
     if (pipe.empty()) {
         printf("out\n");
@@ -101,6 +163,7 @@ int main() {
     MotionDetector detector;
     LaborManager lm(&is_running);
     SharedMemoryManager smm("yolo_frame", 480, 480);
+    std::vector<Detection> recive_output;
 
     std::thread t1([&]() {
         lm.capture_worker(pipe, raw_q, display_q);
@@ -115,9 +178,17 @@ int main() {
         lm.rect_worker(mask_q, rect_q);
     });
     std::thread t5([&]() {
-        lm.crop_worker(rect_q, display_q, chips_q);
+        lm.new_crop_worker(rect_q, display_q, filtered_frame_q);
     });
-    //std::thread t5(draw_worker);
+    //std::thread t5([&]() {
+    //    lm.crop_worker(rect_q, display_q, chips_q);
+    //});
+    //std::thread t5([&]() {
+    //    lm.draw_worker(rect_q, display_q, final_q);
+    //});
+    //std::thread t6([&]() {
+    //    recive_output = smm.receiveYoloResult();
+    //});
 
     while (is_running) {
         cv::Mat display_frame;
@@ -129,13 +200,29 @@ int main() {
                 }
                 //printf("frame count is {%zu}\n", frames.size());
             }
-            continue;
         }
 
-        cv::imshow("boxes", display_frame);
-        if (cv::waitKey(1) == 'q') is_running = false;
+        if (filtered_frame_q.Pop(display_frame)) {
+            smm.sendFrame(display_frame);
+            //cv::imshow("boxes", display_frame);
+            //if (cv::waitKey(1) == 'q') is_running = false;
+        }
+
+        recive_output = smm.receiveYoloResult();
+
+        if (!recive_output.empty()) {
+            for (Detection& det : recive_output) {
+                std::cout << " - Confidence   : " << (det.confidence * 100.0) << "%" << std::endl;
+                std::cout << " - Class ID     : " << (int)det.class_id << std::endl;
+            }
+        }
     }
 
-    t1.join(); t2.join(); t3.join(); t4.join(); t5.join();
+    t1.join(); t2.join(); t3.join(); t4.join(); t5.join(); //t6.join();
     return 0;
+}
+
+int main() { 
+    //return run(); 
+    return test();
 }

@@ -156,6 +156,7 @@ void LaborManager::draw_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>& bbox_q,
     }
 }
 
+//resize로 진행을 하고 있는 부분
 void LaborManager::crop_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>& rect_q, LockFreeQueueSPSC<cv::Mat>& display_q, LockFreeQueueSPSC<std::vector<cv::Mat>>& chips_q) {
     cv::Mat frame;
     std::vector<cv::Rect> rects;
@@ -187,6 +188,41 @@ void LaborManager::crop_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>& rect_q,
                     }
                 }
                 chips_q.Push(resized_chips);
+            }
+        }
+        else {
+            std::this_thread::yield();
+        }
+    }
+}
+
+//
+void LaborManager::new_crop_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>& rect_q, LockFreeQueueSPSC<cv::Mat>& display_q, LockFreeQueueSPSC<cv::Mat>& filtered_frame_q) {
+    cv::Mat frame;
+    std::vector<cv::Rect> rects;
+    int pad = 10;
+    int w_h_pad = pad * 2;
+    
+    while (m_is_running) {
+        if (rect_q.Pop(rects)) {
+            if (display_q.Pop(frame)) {
+                cv::Mat result = cv::Mat::zeros(frame.size(), frame.type());
+                int stand_cols = frame.cols;
+                int stand_rows = frame.rows;
+
+                for (cv::Rect& rect : rects) {
+                    rect.x -= pad;
+                    rect.y -= pad;
+                    rect.width += w_h_pad;
+                    rect.height += w_h_pad;
+                    cv::Rect safe_rect = rect & cv::Rect(0, 0, stand_cols, stand_rows);
+
+                    if (safe_rect.width > 0 && safe_rect.height > 0) {
+                        frame(safe_rect).copyTo(result(safe_rect));
+                    }
+                }
+
+                filtered_frame_q.Push(result);
             }
         }
         else {
