@@ -1,6 +1,7 @@
 #include <opencv2/opencv.hpp>
 
 #include <iostream>
+#include <fstream>
 #include <vector>
 #include <string>
 #include <thread>
@@ -93,65 +94,198 @@ std::string CamTest() {
     return pipe;
 }
 
-int get_images(std::string path, LockFreeQueueSPSC<cv::Mat>* raw_q) {
-    std::vector<std::string> paths;
+namespace TestScope {
+    struct s_label {
+        int class_id;
+        float x, y, x1, y1;
+    };
 
-    cv::glob(path, paths, false);
+    int get_images(std::string path, LockFreeQueueSPSC<cv::Mat>* raw_q) {
+        std::vector<std::string> paths;
 
-    size_t count = 0;
+        cv::glob(path, paths, false);
 
-    if (paths.empty()) {
-        std::cerr << "이미지 파일을 찾을 수 없습니다: " << path << std::endl;
-        return -1;
-    }
+        size_t count = 0;
 
-    for (std::string& p : paths) {
-        cv::Mat img = cv::imread(p);
-
-        if (img.empty()) {
-            std::cerr << "읽기 실패: " << p << std::endl;
-            continue;
+        if (paths.empty()) {
+            std::cerr << "이미지 파일을 찾을 수 없습니다: " << path << std::endl;
+            return -1;
         }
 
-        raw_q->Push(img);
-        ++count;
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        for (std::string& p : paths) {
+            cv::Mat img = cv::imread(p);
+
+            if (img.empty()) {
+                std::cerr << "읽기 실패: " << p << std::endl;
+                continue;
+            }
+
+            raw_q->Push(img);
+            ++count;
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+
+        std::cout << "\n\n images num : " << count << std::endl;
+
+        return 0;
     }
 
-    std::cout << "images num : " << count << std::endl;
+    int get_label(std::string path, LockFreeQueueSPSC<std::vector<s_label>> *labels) {
+        std::vector<std::string> paths;
 
-    return 0;
+        cv::glob(path, paths, false);
+
+        if (paths.empty()) {
+            std::cerr << "텍스트 파일을 찾을 수 없습니다: " << std::endl;
+            return -1;
+        }
+
+        int paths_size = paths.size();
+
+        for (size_t i = 0; i < paths_size; ++i) {
+            std::ifstream file(paths[i].c_str());
+
+            std::vector<s_label> one_file;
+            std::string line = "";
+            s_label label;
+
+            while (std::getline(file, line)) {
+                if (line.empty()) {
+                    continue;
+                }
+                std::stringstream split_text(line);
+
+                if (split_text 
+                    >> label.class_id
+                    >> label.x
+                    >> label.y
+                    >> label.x1
+                    >> label.y1
+                )
+                one_file.emplace_back(label);
+            }
+
+            labels->Push(one_file);
+            file.close();
+        }
+
+        return paths_size;
+    }
+
+    int test() {
+        std::string images_file_path = "test_folder/test/*.jpg";
+        std::string labels_file_path = "test_folder/label/test/*.txt";
+
+        std::thread t1(get_images, images_file_path, &raw_q);
+
+        LockFreeQueueSPSC<std::vector<s_label>> labels;
+
+        int label_size = get_label(labels_file_path, &labels);
+        if (label_size == -1) {
+            return -1;
+        }
+
+        LaborManager lm(&is_running);
+        SharedMemoryManager smm("yolo_frame", 480, 480);
+        std::vector<Detection>* recive_output;
+        std::vector<s_label> p_label;
+
+        size_t count = 0;
+        size_t f_count = 0;
+        size_t t_count = 0;
+        size_t object_count = 0;
+        size_t id_f_count = 0;
+        size_t id_t_count = 0; 
+
+        while (is_running) {
+            cv::Mat image;
+
+            if (count == label_size) {
+                is_running = false;
+                continue;
+            }
+
+            if (raw_q.Pop(image)) {
+                smm.sendFrame(image);
+            }
+
+            recive_output = smm.receiveYoloResult();
+            if (recive_output == nullptr) {
+                continue;
+            }
+
+            labels.Pop(p_label);
+            int t_o_num = p_label.size();
+            int object_num = recive_output->size();
+
+            //printf("\n%d, %d \n", object_num, t_o_num);
+
+            ++count;
+            object_count += t_o_num;
+
+            if (object_num != t_o_num) {
+                ++f_count;
+                id_f_count += t_o_num;
+                continue;
+            }
+
+            size_t l_id_f_count = 0;
+            size_t l_id_t_count = 0;  
+
+            size_t w_count = 0;
+            
+            while (true) {
+                if (object_num == w_count) {
+                    break;
+                }
+
+                Detection& det = (*recive_output)[w_count];
+                s_label& label = p_label[w_count];
+
+                if (det.class_id != label.class_id) {
+                    ++l_id_f_count;
+                }
+                else {
+                    ++l_id_t_count;
+                }
+                
+                ++w_count;
+            }
+
+            std::cout << "\n\n" << std::string(10, '-') << std::endl;
+
+            std::cout << "\n정답 갯수 : " << t_o_num;
+            std::cout << "\n맞춘 갯수 : " << l_id_t_count;
+            std::cout << "\n틀린 갯수 : " << l_id_f_count;
+
+            id_t_count += l_id_t_count;
+            id_f_count += l_id_f_count;
+
+            if (l_id_t_count == t_o_num) {
+                ++t_count;  
+            }
+            else {
+                ++f_count;
+            }
+        }
+
+        std::cout << "\n총 이미지 수 : " << count;
+        std::cout << "\n정답 맞춘 수 : " << t_count;
+        std::cout << "\n정답 못 맞춘 수 : " << f_count << std::endl;
+
+        std::cout << "\n총 객체 수 : " << object_count;
+        std::cout << "\n정답 맞춘 수 : " << id_t_count;
+        std::cout << "\n정답 못 맞춘 수 : " << id_f_count << std::endl;
+
+        t1.join();
+        smm.sendExitSignal();
+
+        return 0;
+    }
 }
 
 int test() {
-    std::string images_file_path = "test_folder/test/*.jpg";
-
-    std::thread t1(get_images, images_file_path, &raw_q);
-
-    LaborManager lm(&is_running);
-    SharedMemoryManager smm("yolo_frame", 480, 480);
-    std::vector<Detection> recive_output;
-
-    while (is_running) {
-        cv::Mat image;
-
-        if (raw_q.Pop(image)) {
-            smm.sendFrame(image);
-        }
-
-        recive_output = smm.receiveYoloResult();
-
-        if (!recive_output.empty()) {
-            for (Detection& det : recive_output) {
-                std::cout << " - Confidence   : " << (det.confidence) << std::endl;
-                std::cout << " - Class ID     : " << (int)det.class_id << std::endl;
-            }
-        }
-    }
-
-    t1.join();
-
-    return 0;
+    return TestScope::test();
 }
 
 int run() {
@@ -163,7 +297,7 @@ int run() {
     MotionDetector detector;
     LaborManager lm(&is_running);
     SharedMemoryManager smm("yolo_frame", 480, 480);
-    std::vector<Detection> recive_output;
+    std::vector<Detection>* recive_output;
 
     std::thread t1([&]() {
         lm.capture_worker(pipe, raw_q, display_q);
@@ -210,8 +344,8 @@ int run() {
 
         recive_output = smm.receiveYoloResult();
 
-        if (!recive_output.empty()) {
-            for (Detection& det : recive_output) {
+        if (!recive_output->empty()) {
+            for (Detection& det : *recive_output) {
                 std::cout << " - Confidence   : " << (det.confidence * 100.0) << "%" << std::endl;
                 std::cout << " - Class ID     : " << (int)det.class_id << std::endl;
             }

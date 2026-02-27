@@ -33,6 +33,13 @@ private:
     sem_t *sem_yolo;
     size_t yolo_size;
 
+    uint16_t last_seq = 0;
+    bool is_done = false;
+
+    std::vector<Detection> results;
+
+    size_t debug_count = 0;
+
 public:
     SharedMemoryManager(std::string name, int w, int h, int c = 3) 
         : shm_name("/" + name + "_shm"), 
@@ -101,27 +108,39 @@ public:
         sem_post(sem_exit);
     }
 
-    std::vector<Detection> receiveYoloResult() {
-        std::vector<Detection> results;
-
+    std::vector<Detection>* receiveYoloResult() {
         if (yolo_ptr == MAP_FAILED) {
             perror("mmap failed");
-            return results;
+            return nullptr;
         }
         
         sem_wait(sem_yolo);
+        uint16_t current_seq = *(uint16_t*)yolo_ptr;
 
-        int count = *(int*)yolo_ptr;
-        printf("\n감지된 객체 수: %d\n", count);
-
-        if (count > 0 && count <= 100) {
-            Detection* data_ptr = (Detection*)((char*)yolo_ptr + 4);
-            
-            results.assign(data_ptr, data_ptr + count);
+        if (current_seq == last_seq) {
+            sem_post(sem_yolo);
+            return nullptr; 
         }
 
+        results.clear();
+
+        int count = *(int*)((char*)yolo_ptr + 4);
+        //printf("\n감지된 객체 수: %d\n", count);
+        ++debug_count;
+        printf("\n%ld\n", debug_count);
+
+        if (count > 0 && count <= 100) {
+            Detection* data_ptr = (Detection*)((char*)yolo_ptr + 8);
+            
+            results.assign(data_ptr, data_ptr + count);
+
+            is_done = true;
+        }
+
+        last_seq = current_seq;
+
         sem_post(sem_yolo);
-        return results;
+        return &results;
     }
 };
 

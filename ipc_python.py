@@ -7,6 +7,7 @@ import numpy as np
 import sys
 import time
 import concurrent.futures
+import struct
 
 # add path
 realpath = os.path.abspath(__file__)
@@ -43,6 +44,8 @@ class SharedMemory:
 
         self.max_objects = Max_OBJECTS
         self.yolo_size = 4 + (self.max_objects * 6 * 4)
+
+        self.sequence_num = 1
         
         try:
             # 세마포어 연결
@@ -77,20 +80,23 @@ class SharedMemory:
     def send_yolo_result(self, detections):
         try:
             count = len(detections) if detections is not None and len(detections) > 0 else 0
-
             count = min(count, self.max_objects)
 
-            count_bytes = np.int32(count).tobytes()
+            # Hxx: Unsigned Short(2B) + Padding(2B) = 총 4바이트 헤더
+            header = struct.pack('Hxx', self.sequence_num)
+            count_bytes = struct.pack('i', count)
 
             data_to_send = detections[:count].astype(np.float32).tobytes() if count > 0 else b""
 
-            #print(f"Current Sem Value: {self.sem_yolo.value}")
             self.sem_yolo.acquire()
             try:
                 self.mem_yolo.seek(0)
-                self.mem_yolo.write(count_bytes)
+                self.mem_yolo.write(header)       # 0~3번지
+                self.mem_yolo.write(count_bytes)  # 4~7번지
                 if count > 0:
-                    self.mem_yolo.write(data_to_send)
+                    self.mem_yolo.write(data_to_send) # 8번지~
+                
+                self.sequence_num = 1 if self.sequence_num >= 65535 else self.sequence_num + 1
             finally:
                 self.sem_yolo.release()
 
@@ -171,7 +177,7 @@ def main():
 
                 s_m_m.send_yolo_result(outputs)
 
-                #del img_input
+                del img_input
 
                 frame_count += 1
 
@@ -186,14 +192,14 @@ def main():
                 print(f"\r[Inference] FPS: {fps:6.2f} | Device: {target}", end='')
 
                 # display_debug
-                img_input = cv2.cvtColor(img_input, cv2.COLOR_RGB2BGR)
-                cv2.imshow("Shared Memory Stream", img_input)
+                #img_input = cv2.cvtColor(img_input, cv2.COLOR_RGB2BGR)
+                #cv2.imshow("Shared Memory Stream", img_input)
 
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
+                #if cv2.waitKey(1) & 0xFF == ord('q'):
+                #    break
 
         except KeyboardInterrupt:
-            print("\nStop signal received.")
+            print("\nStop.")
         finally:
             end = time.time()
             flow_time = end - start_time
