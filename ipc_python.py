@@ -9,16 +9,9 @@ import time
 import concurrent.futures
 import struct
 
-# add path
-realpath = os.path.abspath(__file__)
-_sep = os.path.sep
-realpath = realpath.split(_sep)
-#sys.path.append(os.path.join(realpath[0]+_sep, *realpath[1:realpath.index('rknn_model_zoo')+1]))
-sys.path.append('/home/orangepi/Projects/rknn_model_zoo/')
-
 from py_utils.coco_utils import COCO_test_helper
 
-from yolo8_rknn import setup_rknn, weck_post_process, add_post_process, post_process 
+from yolo8_rknn import setup_rknn, sigmoid_post_process, post_process, pack_add_draw 
 
 IMG_SIZE = (480, 480)
 Max_OBJECTS = 100
@@ -69,6 +62,8 @@ class SharedMemory:
             raise Exception("C++ 프로그램을 먼저 실행해야 합니다.")
 
     def get_frame(self):
+        if self.is_exit() :
+            return None
         self.sem_full.acquire()
         
         img = Image.frombytes("RGB", (self.width, self.height), self.shm)
@@ -87,14 +82,15 @@ class SharedMemory:
             count_bytes = struct.pack('i', count)
 
             data_to_send = detections[:count].astype(np.float32).tobytes() if count > 0 else b""
+            #print(detections[0])
 
             self.sem_yolo.acquire()
             try:
                 self.mem_yolo.seek(0)
-                self.mem_yolo.write(header)       # 0~3번지
-                self.mem_yolo.write(count_bytes)  # 4~7번지
+                self.mem_yolo.write(header)       # 0~3 처리한 frame과 매칭을 위한 부분
+                self.mem_yolo.write(count_bytes)  # 4~7 현 frame에서 감지된 object의 수
                 if count > 0:
-                    self.mem_yolo.write(data_to_send) # 8번지~
+                    self.mem_yolo.write(data_to_send) # 8~ boxes score class 순서로 쭉 담아서 보냄.
                 
                 self.sequence_num = 1 if self.sequence_num >= 65535 else self.sequence_num + 1
             finally:
@@ -105,7 +101,7 @@ class SharedMemory:
     def is_exit(self) -> bool:
         try:
             self.sem_exit.acquire(0)
-            print("exit")
+            print("\nexit")
             return True
         except posix_ipc.BusyError:
             return False
@@ -123,24 +119,31 @@ class SharedMemory:
         except :
             pass
 
-#이 부분에서 병목이 생기는 것을 확인함.
-#기존에 사용했던 add_post_process에서 뭔가 특징이 있는 곳만 순회하여 확인하는 방식으로 cost를 줄임.
 def n_post_process(output_data) :
-    #boxes, classes, scores = weck_post_process(output_data)
-    boxes, classes, scores = post_process(output_data)
+    boxes, classes, scores = sigmoid_post_process(output_data)
+    #boxes, classes, scores = post_process(output_data)
 
     if boxes is not None :
         output = np.column_stack((boxes, scores, classes))
 
-        return output 
+        return output, boxes, scores, classes 
 
-    return None   
+    return None, None, None, None  
+
+def one_thing_left(input_data) :
+    combined = np.vstack(input_data)
+
+    max_id = np.argmax(combined[:, 4])
+
+    left_thing = combined[max_id : max_id + 1]
+
+    return left_thing 
 
 def main():
     global Model
     target = 'rk3588'
-    model_path = 'model_rknn/new_top.rknn'
-    model_1_path = 'model_rknn/new_bottom.rknn'
+    model_path = 'model_rknn/102_class.rknn'
+    model_1_path = 'model_rknn/102_class.rknn'
 
     model = setup_rknn(model_path, target, core_mask=0x1) # core 1
     model_1 = setup_rknn(model_1_path, target, core_mask=0x2) # core 2
@@ -152,6 +155,8 @@ def main():
     prev_time = 0
     frame_count = 0
     start_time = time.time()
+
+    boxes, scores, classes = np.zeros(0), np.zeros(0), np.zeros(0)
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         try:
             while True:
@@ -172,12 +177,34 @@ def main():
                 future_1 = executor.submit(run, model_1, img_input)
 		
                 outputs = future_0.result()
-                outputs = n_post_process(outputs)
-                outputs_1 = future_1.result()
+                outputs, boxes, scores, classes = n_post_process(outputs)
+                #outputs_1 = future_1.result()
+                #outputs_1, boxes, scores, classes = n_post_process(outputs_1)
+                outputs_1 = None
 
-                s_m_m.send_yolo_result(outputs)
+                if outputs is not None :
+                    s_m_m.send_yolo_result(outputs)
+                else :
+                     empty_thing = np.empty((0, 6), dtype=np.float32)
+                     s_m_m.send_yolo_result(empty_thing)
 
-                del img_input
+                # valid_outputs = []
+                # if outputs is not None:
+                #     valid_outputs.append(outputs)
+                # if outputs_1 is not None:
+                #     valid_outputs.append(outputs_1)
+
+                # if len(valid_outputs) > 0:
+                #     out_thing = one_thing_left(valid_outputs)
+                #     s_m_m.send_yolo_result(out_thing)
+                # else :
+                #     empty_thing = np.empty((0, 6), dtype=np.float32)
+                #     s_m_m.send_yolo_result(empty_thing)
+
+                if boxes is not None:
+                    img_input = pack_add_draw(img_input, boxes, scores, classes)
+
+                #del img_input
 
                 frame_count += 1
 
@@ -189,14 +216,15 @@ def main():
 
                 prev_time = current_time
 
-                print(f"\r[Inference] FPS: {fps:6.2f} | Device: {target}", end='')
+                #print(f"\r[Inference] FPS: {fps:6.2f} | Device: {target}", end='')
 
                 # display_debug
-                #img_input = cv2.cvtColor(img_input, cv2.COLOR_RGB2BGR)
-                #cv2.imshow("Shared Memory Stream", img_input)
-
+                img_input = cv2.cvtColor(img_input, cv2.COLOR_RGB2BGR)
+                
+                cv2.imwrite(f'test_cpp_ip/test_result_image/python_image/{frame_count}.jpg', img_input)
+                #cv2.imshow("1", img_input)
                 #if cv2.waitKey(1) & 0xFF == ord('q'):
-                #    break
+                #   break
 
         except KeyboardInterrupt:
             print("\nStop.")

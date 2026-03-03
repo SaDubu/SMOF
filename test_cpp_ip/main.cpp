@@ -97,10 +97,10 @@ std::string CamTest() {
 namespace TestScope {
     struct s_label {
         int class_id;
-        float x, y, x1, y1;
+        float x1, y1, x2, y2;
     };
 
-    int get_images(std::string path, LockFreeQueueSPSC<cv::Mat>* raw_q) {
+    int get_images(std::string path, LockFreeQueueSPSC<cv::Mat>* raw_q, LockFreeQueueSPSC<cv::Mat>* display_q) {
         std::vector<std::string> paths;
 
         cv::glob(path, paths, false);
@@ -121,8 +121,9 @@ namespace TestScope {
             }
 
             raw_q->Push(img);
+            display_q->Push(img);
             ++count;
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
 
         std::cout << "\n\n images num : " << count << std::endl;
@@ -157,10 +158,10 @@ namespace TestScope {
 
                 if (split_text 
                     >> label.class_id
-                    >> label.x
-                    >> label.y
                     >> label.x1
                     >> label.y1
+                    >> label.x2
+                    >> label.y2
                 )
                 one_file.emplace_back(label);
             }
@@ -172,16 +173,78 @@ namespace TestScope {
         return paths_size;
     }
 
-    int test() {
-        std::string images_file_path = "test_folder/test/*.jpg";
-        std::string labels_file_path = "test_folder/label/test/*.txt";
+    int draw_box(LockFreeQueueSPSC<cv::Mat>* display_q, LockFreeQueueSPSC<std::vector<Detection>>* bbox_q, LockFreeQueueSPSC<cv::Mat>* final_q, bool* is_running) {
+        while (is_running) {
+            cv::Mat image;
+            std::vector<Detection> detections;
+            if (display_q->Pop(image)) {
+                while (true) {
+                    if(!bbox_q->Pop(detections)) {
+                        continue;
+                    }
 
-        std::thread t1(get_images, images_file_path, &raw_q);
+                    for (const auto& det : detections) {
+                        int y1 = static_cast<int>(det.y1);
+                        int x1 = static_cast<int>(det.x1);
+                        int y2 = static_cast<int>(det.y2); 
+                        int x2 = static_cast<int>(det.x2);
+
+                        cv::Rect rect(x1, y1, x2 - x1, y2 - y1); 
+                        cv::rectangle(image, rect, cv::Scalar(0, 0, 255), 3); 
+
+                        std::string full_label = cv::format("%d %.2f", (int)det.class_id, det.confidence);
+
+                        int baseline = 0;
+                        cv::Size text_size = cv::getTextSize(full_label, cv::FONT_HERSHEY_SIMPLEX, 0.6, 1, &baseline);
+                        cv::rectangle(image, 
+                                    cv::Point(x1, y1 - text_size.height - 5), 
+                                    cv::Point(x1 + text_size.width, y1), 
+                                    cv::Scalar(0, 0, 255), cv::FILLED);
+
+                        cv::putText(image, full_label, cv::Point(x1, y1 - 5), 
+                                    cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
+
+                        printf("%d @ (%d %d %d %d) %.3f\n", (int)det.class_id, y1, x1, y2, x2, det.confidence);
+                    }
+                    
+                    final_q->Push(image);
+                    break;
+                }
+            }
+        }
+
+        return 0;
+    }
+
+    float calculate_iou(const float* box1, const float* box2) {
+        float x1 = std::max(box1[0], box2[0]);
+        float y1 = std::max(box1[1], box2[1]);
+        float x2 = std::min(box1[2], box2[2]);
+        float y2 = std::min(box1[3], box2[3]);
+
+        float intersection = std::max(0.0f, x2 - x1) * std::max(0.0f, y2 - y1);
+        float area1 = (box1[2] - box1[0]) * (box1[3] - box1[1]);
+        float area2 = (box2[2] - box2[0]) * (box2[3] - box2[1]);
+        float union_area = area1 + area2 - intersection;
+
+        return (union_area <= 0) ? 0 : intersection / union_area;
+    }
+
+    int test() {
+        //std::string images_file_path = "test_folder/test/*.jpg";
+        //std::string labels_file_path = "test_folder/label/test/*.txt";
+
+        std::string images_file_path = "test_folder/102_class/*.jpg";
+        std::string labels_file_path = "test_folder/102_class/label/*.txt";
 
         LockFreeQueueSPSC<std::vector<s_label>> labels;
+        LockFreeQueueSPSC<std::vector<Detection>> detections;
+
+        std::thread t1(get_images, images_file_path, &raw_q, &display_q);
+        std::thread t2(draw_box, &display_q, &detections, &final_q, &is_running);
 
         int label_size = get_label(labels_file_path, &labels);
-        if (label_size == -1) {
+        if (label_size < 0) {
             return -1;
         }
 
@@ -193,12 +256,17 @@ namespace TestScope {
         size_t count = 0;
         size_t f_count = 0;
         size_t t_count = 0;
-        size_t object_count = 0;
         size_t id_f_count = 0;
-        size_t id_t_count = 0; 
+        size_t id_t_count = 0;
+
+        cv::Mat di;
 
         while (is_running) {
             cv::Mat image;
+            if (final_q.Pop(di)) {
+                std::string save_path = cv::format("test_result_image/cpp_image/%ld.jpg", count);  
+                cv::imwrite(save_path, di);
+            }
 
             if (count == label_size) {
                 is_running = false;
@@ -210,10 +278,22 @@ namespace TestScope {
             }
 
             recive_output = smm.receiveYoloResult();
+
             if (recive_output == nullptr) {
                 continue;
             }
 
+            std::vector<Detection> temp = *recive_output;
+            detections.Push(temp);
+
+            /*
+            for (Detection& det : *recive_output) {
+                std::cout << " - Confidence   : " << (det.confidence * 100.0) << "%" << std::endl;
+                std::cout << " - Class ID     : " << (int)det.class_id << std::endl;
+            }
+            */
+
+            
             labels.Pop(p_label);
             int t_o_num = p_label.size();
             int object_num = recive_output->size();
@@ -221,63 +301,125 @@ namespace TestScope {
             //printf("\n%d, %d \n", object_num, t_o_num);
 
             ++count;
-            object_count += t_o_num;
 
-            if (object_num != t_o_num) {
+            if (t_o_num == 0) {
+                if (object_num == 0) {
+                    ++t_count;
+                }
+                else {
+                    ++f_count;
+                }
+                continue;
+            }
+
+            /*
+            if (object_num != 1 or (t_o_num == 0 and object_num > 0)) {
                 ++f_count;
-                id_f_count += t_o_num;
+                printf("\nrecvie object num is %d\n", object_num);
                 continue;
             }
 
             size_t l_id_f_count = 0;
-            size_t l_id_t_count = 0;  
 
             size_t w_count = 0;
             
             while (true) {
-                if (object_num == w_count) {
+                if (t_o_num == l_id_f_count) {
+                    ++f_count;
                     break;
                 }
 
-                Detection& det = (*recive_output)[w_count];
+                Detection& det = (*recive_output)[0];
                 s_label& label = p_label[w_count];
 
-                if (det.class_id != label.class_id) {
-                    ++l_id_f_count;
+                if ((int)det.class_id == (int)label.class_id) {
+                    ++t_count; 
+                    break;
                 }
                 else {
-                    ++l_id_t_count;
+                    ++l_id_f_count;
                 }
                 
                 ++w_count;
             }
-
-            std::cout << "\n\n" << std::string(10, '-') << std::endl;
-
-            std::cout << "\n정답 갯수 : " << t_o_num;
-            std::cout << "\n맞춘 갯수 : " << l_id_t_count;
-            std::cout << "\n틀린 갯수 : " << l_id_f_count;
-
-            id_t_count += l_id_t_count;
-            id_f_count += l_id_f_count;
-
-            if (l_id_t_count == t_o_num) {
-                ++t_count;  
-            }
-            else {
-                ++f_count;
-            }
         }
+            
 
         std::cout << "\n총 이미지 수 : " << count;
         std::cout << "\n정답 맞춘 수 : " << t_count;
         std::cout << "\n정답 못 맞춘 수 : " << f_count << std::endl;
+        */
 
-        std::cout << "\n총 객체 수 : " << object_count;
-        std::cout << "\n정답 맞춘 수 : " << id_t_count;
-        std::cout << "\n정답 못 맞춘 수 : " << id_f_count << std::endl;
+            if (object_num == 0) {
+                continue;
+            }
 
-        t1.join();
+            for (auto& label : p_label) {
+                float w = 480.0f; 
+                float h = 480.0f;
+
+                float gx = label.x1;
+                float gy = label.y1;
+                float gw = label.x2;
+                float gh = label.y2;
+
+                // 픽셀 단위 x1, y1, x2, y2로 덮어쓰기
+                label.x1 = (gx - gw / 2.0f) * w;
+                label.y1 = (gy - gh / 2.0f) * h;
+                label.x2 = (gx + gw / 2.0f) * w;
+                label.y2 = (gy + gh / 2.0f) * h;
+            }
+            /*
+            if (object_num > 0) {
+                Detection& det = (*recive_output)[0];
+                s_label& label = p_label[0];
+
+                printf("\n[DEBUG] Frame %zu\n", count);
+                printf("PRED: Box(%.1f, %.1f, %.1f, %.1f) Class: %d\n", det.x1, det.y1, det.x2, det.y2, (int)det.class_id);
+                printf("GT  : Box(%.1f, %.1f, %.1f, %.1f) Class: %d\n", label.x1, label.y1, label.x2, label.y2, (int)label.class_id);
+            }
+            */
+            int img_tp = 0;
+            std::vector<bool> matched_preds(object_num, false);
+
+            for (const auto& gt : p_label) {
+                bool found_match = false;
+                float gt_box[4] = {gt.x1, gt.y1, gt.x2, gt.y2};
+
+                for (int p_idx = 0; p_idx < object_num; ++p_idx) {
+                    if (matched_preds[p_idx]) continue; 
+
+                    Detection& det = (*recive_output)[p_idx];
+                    float pred_box[4] = {det.x1, det.y1, det.x2, det.y2};
+
+                    if ((int)gt.class_id == (int)det.class_id) {
+                        float iou = calculate_iou(gt_box, pred_box); 
+                        if (iou >= 0.3f) {
+                            ++img_tp;
+                            matched_preds[p_idx] = true; 
+                            found_match = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (img_tp > 0 && img_tp == t_o_num && object_num == t_o_num) {
+                ++t_count; 
+            } else {
+                ++f_count;
+            }
+
+            id_t_count += img_tp; 
+            id_f_count += (t_o_num - img_tp);
+        }
+
+        std::cout << "\n총 이미지 수 : " << count;
+        std::cout << "\n정답 맞춘 수 : " << t_count << " | 객체 맞춘 수 " << id_t_count;
+        std::cout << "\n정답 틀린 수 : " << f_count << " | 객체 틀린 수 " << id_f_count << std::endl;
+
+
+        t1.join(); t2.join();
         smm.sendExitSignal();
 
         return 0;

@@ -9,9 +9,11 @@
 #include <semaphore.h>
 #include <opencv2/opencv.hpp>
 
+#pragma pack(push, 1)
 struct Detection {
     float x1, y1, x2, y2, confidence, class_id;
 };
+#pragma pack(pop)
 
 class SharedMemoryManager {
 private:
@@ -126,8 +128,8 @@ public:
 
         int count = *(int*)((char*)yolo_ptr + 4);
         //printf("\n감지된 객체 수: %d\n", count);
-        ++debug_count;
-        printf("\n%ld\n", debug_count);
+        //++debug_count;
+        //printf("\n%ld\n", debug_count);
 
         if (count > 0 && count <= 100) {
             Detection* data_ptr = (Detection*)((char*)yolo_ptr + 8);

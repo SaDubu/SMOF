@@ -4,13 +4,6 @@ import sys
 import argparse
 import yaml
 
-# add path
-realpath = os.path.abspath(__file__)
-_sep = os.path.sep
-realpath = realpath.split(_sep)
-#sys.path.append(os.path.join(realpath[0]+_sep, *realpath[1:realpath.index('rknn_model_zoo')+1]))
-sys.path.append('/home/orangepi/Projects/rknn_model_zoo/')
-
 from py_utils.coco_utils import COCO_test_helper
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -37,7 +30,7 @@ def get_yaml_info(yaml_path):
     
     return tuple(class_list), id_list
 
-yaml_file = "data.yaml" 
+yaml_file = "test_cpp_ip/test_folder/102_class/data.yaml" 
 CLASSES, coco_id_list = get_yaml_info(yaml_file)
 
 
@@ -169,6 +162,61 @@ def post_process(input_data):
 
 def sigmoid(x):
     return 1 / (1 + np.exp(-x))
+
+def sigmoid_post_process(input_data) :
+    boxes, scores, classes_conf = [], [], []
+    defualt_branch=3
+    pair_per_branch = len(input_data)//defualt_branch
+    # Python 忽略 score_sum 输出
+    for i in range(defualt_branch):
+        boxes.append(box_process(input_data[pair_per_branch*i]))
+        classes_conf.append(input_data[pair_per_branch*i+1])
+        scores.append(np.ones_like(input_data[pair_per_branch*i+1][:,:1,:,:], dtype=np.float32))
+
+    def sp_flatten(_in):
+        ch = _in.shape[1]
+        _in = _in.transpose(0,2,3,1)
+        return _in.reshape(-1, ch)
+
+    boxes = [sp_flatten(_v) for _v in boxes]
+    classes_conf = [sp_flatten(_v) for _v in classes_conf]
+    scores = [sp_flatten(_v) for _v in scores]
+
+    boxes = np.concatenate(boxes)
+    classes_conf = np.concatenate(classes_conf)
+    scores = np.concatenate(scores)
+
+    classes_conf = sigmoid(classes_conf)
+
+    boxes, classes, scores = filter_boxes(boxes, scores, classes_conf)
+
+    # nms
+    nboxes, nclasses, nscores = [], [], []
+    for c in set(classes):
+        inds = np.where(classes == c)
+        b = boxes[inds]
+        c = classes[inds]
+        s = scores[inds]
+        keep = nms_boxes(b, s)
+
+        if len(keep) != 0:
+            nboxes.append(b[keep])
+            nclasses.append(c[keep])
+            nscores.append(s[keep])
+
+    if not nclasses and not nscores:
+        return None, None, None
+
+    boxes = np.concatenate(nboxes)
+    classes = np.concatenate(nclasses)
+    scores = np.concatenate(nscores)
+
+    return boxes, classes, scores
+
+def pack_add_draw(image, boxes, scores, classes) :
+    co_helper = COCO_test_helper(enable_letter_box=True)
+    add_draw(image, boxes, scores, classes)
+    return image
 
 def dfl_optimized(x):
     # x의 형태가 (N, 64, H, W)이든 (N, 64)이든 대응 가능하게 수정
@@ -424,7 +472,7 @@ import time
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Process some integers.')
-    parser.add_argument('--model_path', type=str, default='snack_yolo8s.rknn', 
+    parser.add_argument('--model_path', type=str, default='model_rknn/102_class.rknn', 
                         help='model path, could be .pt or .rknn file')
     parser.add_argument('--target', type=str, default='rk3588', help='target RKNPU platform')
     parser.add_argument('--device_id', type=str, default=None, help='device id')
@@ -453,6 +501,8 @@ if __name__ == '__main__':
     total_tp_count = 0
     error_img_path_list = []
     iou_threshold = 0.5
+
+    count = 0
 
     # run test
     img_list_len = len(img_list)
@@ -516,7 +566,7 @@ if __name__ == '__main__':
             input_data = img
 
         outputs = model.run([input_data])
-        boxes, classes, scores = add_post_process(outputs) 
+        boxes, classes, scores = sigmoid_post_process(outputs) 
 
         image_record = {'img_name': img_name, 'objects' : []}
 
@@ -527,7 +577,8 @@ if __name__ == '__main__':
                 add_draw(img_p, co_helper.get_real_box(boxes), scores, classes)
 
             if args.img_save and boxes is not None:
-                result_path = os.path.join(save_path, img_name)
+                count += 1
+                result_path = os.path.join(save_path, f'{count}.jpg')
                 cv2.imwrite(result_path, img_p)
                 print('Detection result save to {}'.format(result_path))
                         
