@@ -66,8 +66,8 @@ class SharedMemory:
             return None
         self.sem_full.acquire()
         
-        img = Image.frombytes("RGB", (self.width, self.height), self.shm)
-        
+        raw = np.frombuffer(self.shm, dtype=np.uint8).reshape((self.height, self.width, 3))
+        img = raw.copy()
         self.sem_empty.release()
         
         return img
@@ -119,11 +119,12 @@ class SharedMemory:
         except :
             pass
 
-def n_post_process(output_data) :
+def n_post_process(output_data, co_helper) :
     boxes, classes, scores = sigmoid_post_process(output_data)
     #boxes, classes, scores = post_process(output_data)
 
     if boxes is not None :
+        co_helper.get_real_box(boxes)
         output = np.column_stack((boxes, scores, classes))
 
         return output, boxes, scores, classes 
@@ -145,7 +146,7 @@ def main():
     model_path = 'model_rknn/102_class.rknn'
     model_1_path = 'model_rknn/102_class.rknn'
 
-    model = setup_rknn(model_path, target, core_mask=0x1) # core 1
+    model = setup_rknn(model_path, target, core_mask=0x0) # core 1
     #model_1 = setup_rknn(model_1_path, target, core_mask=0x2) # core 2
 
     WIDTH, HEIGHT = 480, 480
@@ -157,27 +158,34 @@ def main():
     start_time = time.time()
 
     boxes, scores, classes = np.zeros(0), np.zeros(0), np.zeros(0)
+    co_helper = COCO_test_helper(enable_letter_box=True)
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         try:
             while True:
                 if s_m_m.is_exit() :
                     break
-
+                
+                frame_count += 1
                 # 공유 메모리에서 이미지 획득
-                pil_img = s_m_m.get_frame()
-                if pil_img is None:
+                img_input = s_m_m.get_frame()
+                if img_input is None:
                     continue
 
                 current_time = time.time()
-                
-                img_input = np.array(pil_img)
-                del pil_img
 
-                future_0 = executor.submit(run, model, img_input)
+                #future_0 = executor.submit(run, model, img_input)
                 #future_1 = executor.submit(run, model_1, img_input)
 		
-                outputs = future_0.result()
-                outputs, boxes, scores, classes = n_post_process(outputs)
+                #outputs = future_0.result()
+
+                img = co_helper.letter_box(im= img_input.copy(), new_shape=(IMG_SIZE[1], IMG_SIZE[0]), pad_color=(0,0,0))
+                #img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                #cv2.imwrite(f'test_cpp_ip/cpp_trans_py_image/{frame_count}.jpg', cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+
+                input_data = img
+
+                output = model.run([input_data])
+                outputs, boxes, scores, classes = n_post_process(output, co_helper)
                 #outputs_1 = future_1.result()
                 #outputs_1, boxes, scores, classes = n_post_process(outputs_1)
                 outputs_1 = None
@@ -203,10 +211,11 @@ def main():
 
                 if boxes is not None:
                     img_input = pack_add_draw(img_input, boxes, scores, classes)
+                    img_input = cv2.cvtColor(img_input, cv2.COLOR_RGB2BGR)
+                
+                    cv2.imwrite(f'test_cpp_ip/real_time/{frame_count}.jpg', img_input)
 
                 #del img_input
-
-                frame_count += 1
 
                 d_t = current_time - prev_time
                 if d_t > 0:
@@ -219,9 +228,6 @@ def main():
                 #print(f"\r[Inference] FPS: {fps:6.2f} | Device: {target}", end='')
 
                 # display_debug
-                img_input = cv2.cvtColor(img_input, cv2.COLOR_RGB2BGR)
-                
-                cv2.imwrite(f'test_cpp_ip/single_core_test_result_image/single_python_image/{frame_count}.jpg', img_input)
                 #cv2.imshow("1", img_input)
                 #if cv2.waitKey(1) & 0xFF == ord('q'):
                 #   break

@@ -196,7 +196,7 @@ void LaborManager::crop_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>& rect_q,
     }
 }
 
-//
+//움직이는 부분만 값 유지 나머지는 검은색 처리
 void LaborManager::new_crop_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>& rect_q, LockFreeQueueSPSC<cv::Mat>& display_q, LockFreeQueueSPSC<cv::Mat>& filtered_frame_q) {
     cv::Mat frame;
     std::vector<cv::Rect> rects;

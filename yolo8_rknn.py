@@ -417,7 +417,7 @@ def add_draw(image, boxes, scores, classes):
 
 
         text_pos = (y1, x1 - 25) 
-        draw_pil.text(text_pos, full_label, font=font, fill=(255, 255, 255))
+        draw_pil.text(text_pos, full_label, font=font, fill=(0, 0, 255))
 
     final_image = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
     image[:] = final_image

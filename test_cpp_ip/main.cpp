@@ -264,7 +264,7 @@ namespace TestScope {
         while (is_running) {
             cv::Mat image;
             if (final_q.Pop(di)) {
-                std::string save_path = cv::format("single_core_test_result_image/single_cpp_image/%ld.jpg", count);  
+                std::string save_path = cv::format("try_2/single_cpp_image/%ld.jpg", count);  
                 cv::imwrite(save_path, di);
             }
 
@@ -486,6 +486,10 @@ int run() {
 
         recive_output = smm.receiveYoloResult();
 
+        if (recive_output == nullptr) {
+            continue;
+        }
+
         if (!recive_output->empty()) {
             for (Detection& det : *recive_output) {
                 std::cout << " - Confidence   : " << (det.confidence * 100.0) << "%" << std::endl;
@@ -499,6 +503,6 @@ int run() {
 }
 
 int main() { 
-    //return run(); 
-    return test();
+    return run(); 
+    //return test();
 }
