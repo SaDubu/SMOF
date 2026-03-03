@@ -264,7 +264,7 @@ namespace TestScope {
         while (is_running) {
             cv::Mat image;
             if (final_q.Pop(di)) {
-                std::string save_path = cv::format("test_result_image/cpp_image/%ld.jpg", count);  
+                std::string save_path = cv::format("single_core_test_result_image/single_cpp_image/%ld.jpg", count);  
                 cv::imwrite(save_path, di);
             }
 

@@ -2,10 +2,10 @@ import cv2
 import os
 import numpy as np
 
-path1 = 'test_cpp_ip/test_result_image/python_image'
-path2 = 'test_cpp_ip/test_result_image/cpp_image'
+path1 = 'test_cpp_ip/single_core_test_result_image/single_python_image'
+path2 = 'test_cpp_ip/single_core_test_result_image/single_cpp_image'
 path3 = 'result/yolov8'
-save_path = 'test_cpp_ip/test_result_image/merged_image'
+save_path = 'test_cpp_ip/single_core_test_result_image/single_merged_image'
 
 if not os.path.exists(save_path):
     os.makedirs(save_path)

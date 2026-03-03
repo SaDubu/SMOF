@@ -146,7 +146,7 @@ def main():
     model_1_path = 'model_rknn/102_class.rknn'
 
     model = setup_rknn(model_path, target, core_mask=0x1) # core 1
-    model_1 = setup_rknn(model_1_path, target, core_mask=0x2) # core 2
+    #model_1 = setup_rknn(model_1_path, target, core_mask=0x2) # core 2
 
     WIDTH, HEIGHT = 480, 480
     s_m_m = SharedMemory("yolo_frame", WIDTH, HEIGHT)
@@ -174,7 +174,7 @@ def main():
                 del pil_img
 
                 future_0 = executor.submit(run, model, img_input)
-                future_1 = executor.submit(run, model_1, img_input)
+                #future_1 = executor.submit(run, model_1, img_input)
 		
                 outputs = future_0.result()
                 outputs, boxes, scores, classes = n_post_process(outputs)
@@ -221,7 +221,7 @@ def main():
                 # display_debug
                 img_input = cv2.cvtColor(img_input, cv2.COLOR_RGB2BGR)
                 
-                cv2.imwrite(f'test_cpp_ip/test_result_image/python_image/{frame_count}.jpg', img_input)
+                cv2.imwrite(f'test_cpp_ip/single_core_test_result_image/single_python_image/{frame_count}.jpg', img_input)
                 #cv2.imshow("1", img_input)
                 #if cv2.waitKey(1) & 0xFF == ord('q'):
                 #   break
