@@ -5,6 +5,8 @@
 #include <opencv2/opencv.hpp>
 #include <thread>
 
+#include "define.h"
+
 class MotionDetector; 
 template <typename T> class LockFreeQueueSPSC;
 
@@ -25,6 +27,8 @@ public :
     void crop_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>& rect_q, LockFreeQueueSPSC<cv::Mat>& display_q, LockFreeQueueSPSC<std::vector<cv::Mat>>& chips_q);
 
     void new_crop_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>& rect_q, LockFreeQueueSPSC<cv::Mat>& display_q, LockFreeQueueSPSC<cv::Mat>& filtered_frame_q);
+
+    void track_worker(LockFreeQueueSPSC<std::vector<Detection>>& objects_q, TrackerVector* trackers);
 
 private :
     bool* m_is_running;

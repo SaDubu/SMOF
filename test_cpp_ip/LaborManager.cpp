@@ -206,7 +206,7 @@ void LaborManager::new_crop_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>& rec
     while (m_is_running) {
         if (rect_q.Pop(rects)) {
             if (display_q.Pop(frame)) {
-                cv::Mat result = cv::Mat::zeros(frame.size(), frame.type());
+                cv::Mat result(frame.size(), frame.type(), cv::Scalar(255, 255, 255));
                 int stand_cols = frame.cols;
                 int stand_rows = frame.rows;
 
@@ -228,5 +228,93 @@ void LaborManager::new_crop_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>& rec
         else {
             std::this_thread::yield();
         }
+    }
+}
+
+//tracker의 현 frame 업데이트 진행.
+void tracker_update(TrackerVector* trackers) {
+    for (int i = 0; i < trackers->size(); ++i) {
+        Tracker& t = (*trackers)[i];
+        
+        t.data.past_cx += t.data.vx;
+        t.data.past_cy += t.data.vy;
+        
+        ++t.data.missing_count; 
+    }
+}
+
+//새로 들어온 object와 tracker가 담고 있는 object matching
+void tracker_match(Detection* object, TrackerVector* trackers) {
+    float cx = (object->x1 + object->x2) * 0.5f;
+    float cy = (object->y1 + object->y2) * 0.5f;
+
+    int best_match_idx = -1;
+    float min_dist_sq = 999999.0f;
+
+    //가장 가까이에 있는 것을 찾도록 함.
+    for (int i = 0; i < trackers->size(); ++i) {
+        Tracker& t = (*trackers)[i];
+        
+        float dx = t.data.past_cx - cx;
+        float dy = t.data.past_cy - cy;
+        float dist_sq = dx * dx + dy * dy;
+
+        if (dist_sq < min_dist_sq && dist_sq < MAX_DIST_SQ) {
+            min_dist_sq = dist_sq;
+            best_match_idx = i;
+        }
+    }
+
+    if (best_match_idx != -1) {
+        Tracker& matched_tr = (*trackers)[best_match_idx];
+        
+        matched_tr.data.vx = cx - (matched_tr.data.past_cx - matched_tr.data.vx);
+        matched_tr.data.vy = cy - (matched_tr.data.past_cy - matched_tr.data.vy);
+        
+        matched_tr.data.past_cx = cx;
+        matched_tr.data.past_cy = cy;
+        
+
+        matched_tr.data.missing_count = 0;
+        matched_tr.history.add(static_cast<int>(object->class_id));
+
+    } else {
+        Tracker* new_tr = trackers->emit_back();
+        
+        if (new_tr != nullptr) {
+            new_tr->data.past_cx = cx;
+            new_tr->data.past_cy = cy;
+            new_tr->data.vx = 0.0f;
+            new_tr->data.vy = 0.0f;
+            new_tr->data.missing_count = 0;
+            new_tr->data.is_lost = false;
+            new_tr->history.add(static_cast<int>(object->class_id));
+        }
+    }
+}
+
+//아직 테스트를 다 진행하지 못함.
+void LaborManager::track_worker(LockFreeQueueSPSC<std::vector<Detection>>& objects_q, TrackerVector* trackers) {
+    std::vector<Detection> objects;
+
+    Detection* object;
+
+    while (true) {
+        if (!objects_q.Pop(objects)) {
+            std::this_thread::yield();
+            continue;
+        }
+
+        if (trackers->size() > 0) {
+            tracker_update(trackers);
+        }
+
+        for (int i = 0; i < objects.size(); ++i) {
+            object = &objects[i];
+            
+            tracker_match(object, trackers);
+        }
+
+        trackers->cleanup();
     }
 }

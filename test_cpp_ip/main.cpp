@@ -8,6 +8,7 @@
 
 #include <stdlib.h>
 
+#include "define.h"
 
 #include "MotionDetector.hpp"
 #include "LFQSPSC.h"
@@ -424,10 +425,285 @@ namespace TestScope {
 
         return 0;
     }
+
+    void test_tracking_logic();
+    void visualize_tracking();
+    void visualize_tracking_line();
+
+    //test를 어떻게 진행할지 잘 고민해봐야할 것 같음.
+    //일단 object를 내가 만들어야겠지? 만드는거
+    int tracker_test() {
+
+        visualize_tracking_line();
+        return 0;
+    }
+    //tracker의 현 frame 업데이트 진행.
+    void tracker_update(TrackerVector* trackers) {
+        for (int i = 0; i < trackers->size(); ++i) {
+            Tracker& t = (*trackers)[i];
+            
+            t.data.past_cx += t.data.vx;
+            t.data.past_cy += t.data.vy;
+            
+            ++t.data.missing_count; 
+        }
+    }
+
+    //새로 들어온 object와 tracker가 담고 있는 object matching
+    void tracker_match(Detection* object, TrackerVector* trackers) {
+        float cx = (object->x1 + object->x2) * 0.5f;
+        float cy = (object->y1 + object->y2) * 0.5f;
+
+        int best_match_idx = -1;
+        float min_dist_sq = 999999.0f;
+
+        //가장 가까이에 있는 것을 찾도록 함.
+        for (int i = 0; i < trackers->size(); ++i) {
+            Tracker& t = (*trackers)[i];
+            
+            float dx = t.data.past_cx - cx;
+            float dy = t.data.past_cy - cy;
+            float dist_sq = dx * dx + dy * dy;
+
+            if (dist_sq < min_dist_sq && dist_sq < MAX_DIST_SQ) {
+                min_dist_sq = dist_sq;
+                best_match_idx = i;
+            }
+        }
+
+        if (best_match_idx != -1) {
+            Tracker& matched_tr = (*trackers)[best_match_idx];
+            
+            matched_tr.data.vx = cx - (matched_tr.data.past_cx - matched_tr.data.vx);
+            matched_tr.data.vy = cy - (matched_tr.data.past_cy - matched_tr.data.vy);
+            
+            matched_tr.data.past_cx = cx;
+            matched_tr.data.past_cy = cy;
+            
+
+            matched_tr.data.missing_count = 0;
+            matched_tr.history.add(static_cast<int>(object->class_id));
+
+        } else {
+            Tracker* new_tr = trackers->emit_back();
+            
+            if (new_tr != nullptr) {
+                new_tr->data.past_cx = cx;
+                new_tr->data.past_cy = cy;
+                new_tr->data.vx = 0.0f;
+                new_tr->data.vy = 0.0f;
+                new_tr->data.missing_count = 0;
+                new_tr->data.is_lost = false;
+                new_tr->history.add(static_cast<int>(object->class_id));
+            }
+        }
+    }
+
+    void test_tracking_logic() {
+        TrackerVector trackers;
+        std::cout << "--- Tracker Simulation Test Started ---" << std::endl;
+
+        for (int frame = 0; frame < 100; ++frame) {
+            std::cout << "\n[Frame " << frame << "]" << std::endl;
+
+            if (trackers.size() > 0) {
+                tracker_update(&trackers);
+            }
+
+            std::vector<Detection> current_frame_objects;
+
+            Detection obj1;
+            float center_x1 = 100.0f + (frame * 10.0f);
+            float center_y1 = 100.0f + (frame * 10.0f);
+            obj1.x1 = center_x1 - 5.0f;
+            obj1.x2 = center_x1 + 5.0f;
+            obj1.y1 = center_y1 - 5.0f;
+            obj1.y2 = center_y1 + 5.0f;
+            obj1.class_id = 1;
+            current_frame_objects.push_back(obj1);
+
+            if (frame >= 2) {
+                Detection obj2;
+                float center_x2 = 200.0f + ((frame - 2) * 20.0f);
+                float center_y2 = 50.0f;
+                obj2.x1 = center_x2 - 10.0f; 
+                obj2.x2 = center_x2 + 10.0f;
+                obj2.y1 = center_y2 - 10.0f;
+                obj2.y2 = center_y2 + 10.0f;
+                obj2.class_id = 2;
+                current_frame_objects.push_back(obj2);
+            }
+
+            for (int i = 0; i < current_frame_objects.size(); ++i) {
+                tracker_match(&current_frame_objects[i], &trackers);
+            }
+
+
+            for (int i = 0; i < trackers.size(); ++i) {
+                Tracker& t = trackers[i];
+                std::cout << "  Tracker [" << i << "] "
+                        << "| Pos: (" << t.data.past_cx << ", " << t.data.past_cy << ") "
+                        << "| Vel: (" << t.data.vx << ", " << t.data.vy << ") "
+                        << "| Missing: " << t.data.missing_count << "\n";
+            }
+
+            // trackers.cleanup(); // 구현하신 cleanup 호출 (missing_count 초과 시 삭제)
+        }
+        std::cout << "---------------------------------------" << std::endl;
+    }
+
+    #include <cmath>
+
+    // 트래커 ID별 고유 색상 생성을 위한 함수
+    cv::Scalar get_color(int id) {
+        int r = (id * 123) % 255;
+        int g = (id * 456) % 255;
+        int b = (id * 789) % 255;
+        return cv::Scalar(b, g, r); // OpenCV는 BGR 순서
+    }
+
+    void visualize_tracking() {
+        TrackerVector trackers;
+        cv::Mat canvas = cv::Mat::zeros(480, 480, CV_8UC3);
+        
+        std::cout << "--- 시각화 테스트 시작 (ESC를 누르면 종료) ---" << std::endl;
+
+        for (int frame = 0; frame < 100; ++frame) {
+            if (trackers.size() > 0) {
+                tracker_update(&trackers);
+            }
+
+            std::vector<Detection> current_frame_objects;
+            Detection obj1;
+            float center_x1 = 50.0f + (frame * 4.0f);
+            float center_y1 = 50.0f + (frame * 3.0f);
+            
+            obj1.x1 = center_x1 - 5.0f;
+            obj1.x2 = center_x1 + 5.0f;
+            obj1.y1 = center_y1 - 5.0f;
+            obj1.y2 = center_y1 + 5.0f;
+            obj1.class_id = 1;
+            current_frame_objects.push_back(obj1);
+
+            for (auto& obj : current_frame_objects) {
+                tracker_match(&obj, &trackers);
+            }
+
+            for (int i = 0; i < trackers.size(); ++i) {
+                Tracker& t = trackers[i];
+                cv::Scalar color = get_color(t.data.tracker_number);
+                
+                // 현재 위치에 점 찍기
+                cv::circle(canvas, cv::Point(t.data.past_cx, t.data.past_cy), 2, color, -1);
+                
+                // 현재 위치 옆에 ID 표시
+                cv::putText(canvas, "ID:" + std::to_string(i), 
+                            cv::Point(t.data.past_cx + 5, t.data.past_cy), 
+                            cv::FONT_HERSHEY_SIMPLEX, 0.4, color, 1);
+            }
+
+            // 화면 출력
+            cv::imshow("Tracker Path Visualization", canvas);
+            
+            // 30ms 대기 (초당 약 33프레임 속도)
+            if (cv::waitKey(30) == 27) break; 
+        }
+
+        cv::waitKey(0); // 종료 전 결과 유지
+    }
+
+    #include <map> // 트래커별 경로 저장을 위해 사용
+
+    // 트래커 ID별로 좌표 리스트를 관리합니다.
+    std::map<int, std::vector<cv::Point>> path_history;
+
+    void visualize_tracking_line() {
+        TrackerVector trackers;
+        cv::Mat canvas = cv::Mat::zeros(480, 480, CV_8UC3);
+        
+        for (int frame = 0; frame < 200; ++frame) {
+            // 1. 업데이트 및 가상 객체 생성 (기존 로직 동일)
+            if (trackers.size() > 0) tracker_update(&trackers);
+
+            std::vector<Detection> objects;
+            Detection obj;
+            float cx = 50.0f + (frame * 3.0f);
+            float cy = 100.0f + std::sin(frame * 0.1f) * 50.0f;
+            obj.x1 = cx-5; obj.x2 = cx+5; obj.y1 = cy-5; obj.y2 = cy+5;
+            objects.push_back(obj);
+
+            for (auto& o : objects) tracker_match(&o, &trackers);
+
+            for (int i = 0; i < trackers.size(); ++i) {
+                Tracker& t = trackers[i];
+                int id = t.data.tracker_number;
+                
+                path_history[id].push_back(cv::Point((int)t.data.past_cx, (int)t.data.past_cy));
+
+                const std::vector<cv::Point>& points = path_history[id];
+                cv::Scalar color = get_color(id);
+
+                for (size_t j = 1; j < points.size(); ++j) {
+                    cv::line(canvas, points[j - 1], points[j], color, 2, cv::LINE_AA);
+                }
+
+                std::cout << "  Tracker [" << i << "] "
+                        << "| Pos: (" << t.data.past_cx << ", " << t.data.past_cy << ") "
+                        << "| Vel: (" << t.data.vx << ", " << t.data.vy << ") "
+                        << "| Missing: " << t.data.missing_count << "\n";
+            }
+
+            cv::imshow("Tracking Path Line", canvas);
+            if (cv::waitKey(30) >= 0) break;
+        }
+    }
 }
 
 int test() {
-    return TestScope::test();
+    return TestScope::tracker_test();
+}
+
+int draw_box(LockFreeQueueSPSC<cv::Mat>* display_q, LockFreeQueueSPSC<std::vector<Detection>>* bbox_q, LockFreeQueueSPSC<cv::Mat>* final_q, bool* is_running) {
+    while (is_running) {
+        cv::Mat image;
+        std::vector<Detection> detections;
+        if (display_q->Pop(image)) {
+            while (true) {
+                if(!bbox_q->Pop(detections)) {
+                    continue;
+                }
+
+                for (const auto& det : detections) {
+                    int y1 = static_cast<int>(det.y1);
+                    int x1 = static_cast<int>(det.x1);
+                    int y2 = static_cast<int>(det.y2); 
+                    int x2 = static_cast<int>(det.x2);
+
+                    cv::Rect rect(x1, y1, x2 - x1, y2 - y1); 
+                    cv::rectangle(image, rect, cv::Scalar(0, 0, 255), 3); 
+
+                    std::string full_label = cv::format("%d %.2f", (int)det.class_id, det.confidence);
+
+                    int baseline = 0;
+                    cv::Size text_size = cv::getTextSize(full_label, cv::FONT_HERSHEY_SIMPLEX, 0.6, 1, &baseline);
+                    cv::rectangle(image, 
+                                cv::Point(x1, y1 - text_size.height - 5), 
+                                cv::Point(x1 + text_size.width, y1), 
+                                cv::Scalar(0, 0, 255), cv::FILLED);
+
+                    cv::putText(image, full_label, cv::Point(x1, y1 - 5), 
+                                cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
+
+                    printf("%d @ (%d %d %d %d) %.3f\n", (int)det.class_id, y1, x1, y2, x2, det.confidence);
+                }
+                
+                final_q->Push(image);
+                break;
+            }
+        }
+    }
+
+    return 0;
 }
 
 int run() {
@@ -437,9 +713,11 @@ int run() {
         return -1;
     }
     MotionDetector detector;
+    TrackerVector tracker_vector;
     LaborManager lm(&is_running);
     SharedMemoryManager smm("yolo_frame", 480, 480);
     std::vector<Detection>* recive_output;
+    LockFreeQueueSPSC<std::vector<Detection>> detections;
 
     std::thread t1([&]() {
         lm.capture_worker(pipe, raw_q, display_q);
@@ -456,6 +734,8 @@ int run() {
     std::thread t5([&]() {
         lm.new_crop_worker(rect_q, display_q, filtered_frame_q);
     });
+
+    std::thread t6(draw_box, &display_q, &detections, &final_q, &is_running);
     //std::thread t5([&]() {
     //    lm.crop_worker(rect_q, display_q, chips_q);
     //});
@@ -466,10 +746,12 @@ int run() {
     //    recive_output = smm.receiveYoloResult();
     //});
 
+    size_t count = 0; 
     while (is_running) {
         cv::Mat display_frame;
+        cv::Mat display;
         std::vector<cv::Mat> frames;
-        if (!final_q.Pop(display_frame)) {
+        if (!final_q.Pop(display)) {
             if (chips_q.Pop(frames)) {
                 for (cv::Mat& frame : frames) {
                     smm.sendFrame(frame);
@@ -477,18 +759,24 @@ int run() {
                 //printf("frame count is {%zu}\n", frames.size());
             }
         }
+        else {
+            std::string save_path = cv::format("try_3/image/%ld.jpg", count);  
+            cv::imwrite(save_path, display);
+            cv::imshow("boxes", display);
+            if (cv::waitKey(1) == 'q') is_running = false;
+        }
 
         if (filtered_frame_q.Pop(display_frame)) {
             smm.sendFrame(display_frame);
-            //cv::imshow("boxes", display_frame);
-            //if (cv::waitKey(1) == 'q') is_running = false;
         }
 
         recive_output = smm.receiveYoloResult();
-
+        
         if (recive_output == nullptr) {
             continue;
         }
+        std::vector<Detection> temp = *recive_output;
+        detections.Push(temp);
 
         if (!recive_output->empty()) {
             for (Detection& det : *recive_output) {
@@ -496,6 +784,7 @@ int run() {
                 std::cout << " - Class ID     : " << (int)det.class_id << std::endl;
             }
         }
+        ++count;
     }
 
     t1.join(); t2.join(); t3.join(); t4.join(); t5.join(); //t6.join();

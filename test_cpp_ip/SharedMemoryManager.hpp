@@ -9,11 +9,7 @@
 #include <semaphore.h>
 #include <opencv2/opencv.hpp>
 
-#pragma pack(push, 1)
-struct Detection {
-    float x1, y1, x2, y2, confidence, class_id;
-};
-#pragma pack(pop)
+#include "define.h"
 
 class SharedMemoryManager {
 private:
