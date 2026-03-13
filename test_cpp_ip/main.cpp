@@ -18,6 +18,8 @@
 LockFreeQueueSPSC<std::vector<cv::Mat>> chips_q;
 
 LockFreeQueueSPSC<cv::Mat> raw_q;
+LockFreeQueueSPSC<cv::Mat> original_q;
+LockFreeQueueSPSC<ChipInfo> o_q;
 LockFreeQueueSPSC<cv::Mat> display_q;
 LockFreeQueueSPSC<cv::Mat> motion_q;
 LockFreeQueueSPSC<cv::Mat> mask_q;
@@ -278,7 +280,7 @@ namespace TestScope {
                 smm.sendFrame(image);
             }
 
-            recive_output = smm.receiveYoloResult();
+            //recive_output = smm.receiveYoloResult();
 
             if (recive_output == nullptr) {
                 continue;
@@ -664,49 +666,90 @@ int test() {
 }
 
 int draw_box(LockFreeQueueSPSC<cv::Mat>* display_q, LockFreeQueueSPSC<std::vector<Detection>>* bbox_q, LockFreeQueueSPSC<cv::Mat>* final_q, bool* is_running) {
-    while (is_running) {
-        cv::Mat image;
-        std::vector<Detection> detections;
-        if (display_q->Pop(image)) {
-            while (true) {
-                if(!bbox_q->Pop(detections)) {
-                    continue;
+    cv::Mat image;
+    std::vector<Detection> detections;
+    if (display_q->Pop(image)) {
+        if(bbox_q->Pop(detections)) {
+            for (Detection& det : detections) {
+                int y1 = static_cast<int>(det.y1);
+                int x1 = static_cast<int>(det.x1);
+                int y2 = static_cast<int>(det.y2); 
+                int x2 = static_cast<int>(det.x2);
+
+                if (x1 == 0.0f && y1 == 0.0f && x2 == 0.0f && y2 == 0.0f) {
+                    continue; 
                 }
 
-                for (const auto& det : detections) {
-                    int y1 = static_cast<int>(det.y1);
-                    int x1 = static_cast<int>(det.x1);
-                    int y2 = static_cast<int>(det.y2); 
-                    int x2 = static_cast<int>(det.x2);
+                cv::Rect rect(x1, y1, x2 - x1, y2 - y1); 
+                cv::rectangle(image, rect, cv::Scalar(0, 0, 255), 3); 
 
-                    cv::Rect rect(x1, y1, x2 - x1, y2 - y1); 
-                    cv::rectangle(image, rect, cv::Scalar(0, 0, 255), 3); 
+                std::string full_label = cv::format("%d %.2f", (int)det.class_id, det.confidence);
 
-                    std::string full_label = cv::format("%d %.2f", (int)det.class_id, det.confidence);
+                int baseline = 0;
+                cv::Size text_size = cv::getTextSize(full_label, cv::FONT_HERSHEY_SIMPLEX, 0.6, 1, &baseline);
+                cv::rectangle(image, 
+                            cv::Point(x1, y1 - text_size.height - 5), 
+                            cv::Point(x1 + text_size.width, y1), 
+                            cv::Scalar(0, 0, 255), cv::FILLED);
 
-                    int baseline = 0;
-                    cv::Size text_size = cv::getTextSize(full_label, cv::FONT_HERSHEY_SIMPLEX, 0.6, 1, &baseline);
-                    cv::rectangle(image, 
-                                cv::Point(x1, y1 - text_size.height - 5), 
-                                cv::Point(x1 + text_size.width, y1), 
-                                cv::Scalar(0, 0, 255), cv::FILLED);
+                cv::putText(image, full_label, cv::Point(x1, y1 - 5), 
+                            cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
 
-                    cv::putText(image, full_label, cv::Point(x1, y1 - 5), 
-                                cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
-
-                    printf("%d @ (%d %d %d %d) %.3f\n", (int)det.class_id, y1, x1, y2, x2, det.confidence);
-                }
-                
-                final_q->Push(image);
-                break;
+                //printf("%d @ (%d %d %d %d) %.3f\n", (int)det.class_id, y1, x1, y2, x2, det.confidence);
             }
+            
+            final_q->Push(image);
+            return 0;
         }
+        image.release();
+        final_q->Push(image);
     }
 
-    return 0;
+    return 1;
 }
 
-int run() {
+bool revert_xy(std::vector<cv::Rect>* original_rect, std::vector<Detection>* yolo_result) {
+    int size_original_rect = original_rect->size();
+    int size_yolo_result = yolo_result->size();
+    
+    if (size_original_rect != size_yolo_result) {
+        printf("s??");
+        return false;
+    }
+    cv::Rect* rect;
+    Detection* detection;
+    float yolo_x1, yolo_y1, yolo_x2, yolo_y2;
+    for (int i = 0; i < size_yolo_result; i++) {
+        rect = &(original_rect->at(i));
+        detection = &(yolo_result->at(i));
+        
+
+        yolo_x1 = detection->x1;
+        yolo_y1 = detection->y1;
+        yolo_x2 = detection->x2;
+        yolo_y2 = detection->y2;
+
+        if (yolo_x1 == 0.0f && yolo_y1 == 0.0f && yolo_x2 == 0.0f && yolo_y2 == 0.0f) {
+            continue; 
+        }
+
+        double scale_w = (double)rect->width / 480.0;
+        double scale_h = (double)rect->height / 480.0;
+
+        float real_x1 = yolo_x1 * scale_w + rect->x;
+        float real_y1 = yolo_y1 * scale_h + rect->y;
+        float real_x2 = yolo_x2 * scale_w + rect->x;
+        float real_y2 = yolo_y2 * scale_h + rect->y;
+
+        detection->x1 = real_x1;
+        detection->y1 = real_y1;
+        detection->x2 = real_x2;
+        detection->y2 = real_y2;
+    }
+    return true;
+}
+
+int run_1() {
     std::string pipe = CamTest();
     if (pipe.empty()) {
         printf("out\n");
@@ -716,6 +759,7 @@ int run() {
     TrackerVector tracker_vector;
     LaborManager lm(&is_running);
     SharedMemoryManager smm("yolo_frame", 480, 480);
+    smm.setChipsNum(0);
     std::vector<Detection>* recive_output;
     LockFreeQueueSPSC<std::vector<Detection>> detections;
 
@@ -731,14 +775,15 @@ int run() {
     std::thread t4([&]() {
         lm.rect_worker(mask_q, rect_q);
     });
-    std::thread t5([&]() {
-        lm.new_crop_worker(rect_q, display_q, filtered_frame_q);
-    });
 
-    std::thread t6(draw_box, &display_q, &detections, &final_q, &is_running);
+    std::thread t5([&]() {
+        lm.crop_worker(rect_q, display_q, chips_q, o_q);
+    });
     //std::thread t5([&]() {
-    //    lm.crop_worker(rect_q, display_q, chips_q);
+    //    lm.new_crop_worker(rect_q, display_q, filtered_frame_q);
     //});
+
+    //std::thread t6(draw_box, &original_q, &detections, &final_q, &is_running);
     //std::thread t5([&]() {
     //    lm.draw_worker(rect_q, display_q, final_q);
     //});
@@ -747,28 +792,45 @@ int run() {
     //});
 
     size_t count = 0; 
+    int chips_num = 0;
+    ChipInfo chip_info;
+    std::vector<cv::Rect>* original_rect;
+    int num_frame = 0;
     while (is_running) {
         cv::Mat display_frame;
         cv::Mat display;
         std::vector<cv::Mat> frames;
-        if (!final_q.Pop(display)) {
-            if (chips_q.Pop(frames)) {
+        if (!o_q.Pop(chip_info)) {
+            continue;
+        }
+        if (chips_q.Pop(frames)) {
+            chips_num = smm.getChipsNum();
+            if (chips_num == 0) {
+                num_frame = (int)frames.size();
+                if (num_frame == 0) {
+                    continue;
+                }
+                original_q.Push(chip_info.image);
+                original_rect = &chip_info.original_rect;
+                smm.setChipsNum(num_frame);
                 for (cv::Mat& frame : frames) {
                     smm.sendFrame(frame);
                 }
-                //printf("frame count is {%zu}\n", frames.size());
             }
-        }
-        else {
-            std::string save_path = cv::format("try_3/image/%ld.jpg", count);  
-            cv::imwrite(save_path, display);
-            cv::imshow("boxes", display);
-            if (cv::waitKey(1) == 'q') is_running = false;
+            else {
+                std::cout << "chips_num is " << chips_num << "\n";
+                std::cout << "count is " << count << "\n";
+            }
+            //printf("frame count is {%zu}\n", frames.size());
         }
 
+        //continue;
+
+        /*
         if (filtered_frame_q.Pop(display_frame)) {
             smm.sendFrame(display_frame);
         }
+        */
 
         recive_output = smm.receiveYoloResult();
         
@@ -776,18 +838,181 @@ int run() {
             continue;
         }
         std::vector<Detection> temp = *recive_output;
+        if (revert_xy(original_rect, &temp)) {
+            continue;
+        }
         detections.Push(temp);
 
-        if (!recive_output->empty()) {
-            for (Detection& det : *recive_output) {
-                std::cout << " - Confidence   : " << (det.confidence * 100.0) << "%" << std::endl;
-                std::cout << " - Class ID     : " << (int)det.class_id << std::endl;
-            }
-        }
+        draw_box(&original_q, &detections, &final_q, &is_running);
+
         ++count;
+
+        if (!final_q.Pop(display)) {
+            continue;
+        }
+        else {
+            if (!display.empty()) {
+                std::string save_path = cv::format("try_3/image/%ld.jpg", count);  
+                cv::imwrite(save_path, display);
+            }
+            //cv::imshow("boxes", display);
+            //if (cv::waitKey(1) == 'q') is_running = false;
+        }
+
     }
 
     t1.join(); t2.join(); t3.join(); t4.join(); t5.join(); //t6.join();
+    return 0;
+}
+
+int draw_box(cv::Mat* display_q, LockFreeQueueSPSC<std::vector<Detection>>* bbox_q, LockFreeQueueSPSC<cv::Mat>* final_q, bool* is_running) {
+    cv::Mat image;
+    std::vector<Detection> detections;
+    image = *display_q;
+    bool is_zero = false;
+    if(bbox_q->Pop(detections)) {
+        for (Detection& det : detections) {
+            int y1 = static_cast<int>(det.y1);
+            int x1 = static_cast<int>(det.x1);
+            int y2 = static_cast<int>(det.y2); 
+            int x2 = static_cast<int>(det.x2);
+
+            if (x1 == 0.0f && y1 == 0.0f && x2 == 0.0f && y2 == 0.0f) {
+                is_zero = true;
+                continue; 
+            }
+
+            is_zero = false;
+
+            cv::Rect rect(x1, y1, x2 - x1, y2 - y1); 
+            cv::rectangle(image, rect, cv::Scalar(0, 0, 255), 3); 
+
+            std::string full_label = cv::format("%d %.2f", (int)det.class_id, det.confidence);
+
+            int baseline = 0;
+            cv::Size text_size = cv::getTextSize(full_label, cv::FONT_HERSHEY_SIMPLEX, 0.6, 1, &baseline);
+            cv::rectangle(image, 
+                        cv::Point(x1, y1 - text_size.height - 5), 
+                        cv::Point(x1 + text_size.width, y1), 
+                        cv::Scalar(0, 0, 255), cv::FILLED);
+
+            cv::putText(image, full_label, cv::Point(x1, y1 - 5), 
+                        cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
+
+            //printf("%d @ (%d %d %d %d) %.3f\n", (int)det.class_id, y1, x1, y2, x2, det.confidence);
+        }
+        
+        if (is_zero) {
+            image.release();
+        }
+        final_q->Push(image);
+        return 0;
+    }
+    image.release();
+    final_q->Push(image);
+
+    return 1;
+}
+
+//일단 영상을 담아온 뒤 모두 이것을 통하도록 만들어버림. 
+// 그리고 이건 main thread에서 image를 가져와야만 처리 되도록 함.
+void sendFrame_g(SharedMemoryManager* p_smm, LockFreeQueueSPSC<cv::Mat>* tunnel, LockFreeQueueSPSC<cv::Mat>* raw_q) {
+    cv::Mat frame;
+    while (true) {
+        if (!tunnel->Pop(frame)) {
+            continue;
+        }
+        p_smm->sendFrame(frame);
+
+        raw_q->Push(frame);
+    }
+}
+
+void reciver(SharedMemoryManager* p_smm, LockFreeQueueSPSC<std::vector<Detection>>* detections) {
+    std::vector<Detection>* recive_output;
+
+    while (true) {
+        recive_output = p_smm->receiveYoloResult();
+        if (recive_output == nullptr) {
+            continue;
+        }
+        std::vector<Detection> temp = *recive_output;
+        detections->Push(temp);
+    }
+}
+
+LockFreeQueueSPSC<cv::Mat> tunnel;
+LockFreeQueueSPSC<std::vector<Detection>> g_detections;
+
+int run() {
+    std::string pipe = CamTest();
+    if (pipe.empty()) {
+        printf("out\n");
+        return -1;
+    }
+
+    cv::Mat raw_image;
+    cv::Mat* send_image = nullptr;
+    cv::Mat display;
+    size_t count = 0;
+
+    MotionDetector detector;
+    TrackerVector tracker_vector;
+    LaborManager lm(&is_running);
+    SharedMemoryManager smm("yolo_frame", 480, 480);
+    smm.setChipsNum(0);
+    std::vector<Detection>* recive_output;
+    LockFreeQueueSPSC<std::vector<Detection>> detections;
+    std::vector<cv::Rect> frame_rect;
+
+    std::thread t1([&]() {
+        lm.capture_worker(pipe, raw_q, display_q);
+    });
+    std::thread t2(sendFrame_g, &smm, &tunnel, &raw_q);
+    std::thread t3([&]() {
+        lm.diff_worker(detector, raw_q, motion_q);
+    });
+    std::thread t4([&]() {
+        lm.mask_worker(motion_q, rect_q, mask_q);
+    });
+    std::thread t5([&]() {
+        lm.rect_worker(mask_q, rect_q);
+    });
+    
+    while(true) {
+        if (!display_q.Pop(raw_image)) {
+            send_image = nullptr;
+            raw_image.release();
+            continue;
+        }
+        tunnel.Push(raw_image.clone());
+
+        recive_output = smm.receiveYoloResult();
+        if (recive_output == nullptr) {
+            continue;
+        }
+        rect_q.Pop(frame_rect);
+        std::vector<Detection> temp = *recive_output;
+        detections.Push(temp);
+        draw_box(&raw_image, &detections, &final_q, &is_running);
+
+        if (!final_q.Pop(display)) {
+            display.release();
+            continue;
+        }
+        else {
+            if (!display.empty()) {
+                ++count;
+                std::string save_path = cv::format("try_3/image/%ld.jpg", count);  
+                cv::imwrite(save_path, display);
+            }
+            //cv::imshow("boxes", display);
+            //if (cv::waitKey(1) == 'q') is_running = false;
+        }
+
+    }
+
+    t1.join();
     return 0;
 }
 

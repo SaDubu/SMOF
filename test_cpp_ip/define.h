@@ -4,6 +4,13 @@
 //sqrt 생략하기 위해 50의 제곱을 사용함.
 const float MAX_DIST_SQ = 2500.0f; //(중심을 기준 50픽셀 거리를 max)
 
+#include <vector>
+
+struct ChipInfo {
+    cv::Mat image {};
+    std::vector<cv::Rect> original_rect {};
+};
+
 class ObjectHistory {
 private:
     static const int LIST_SIZE = 30;

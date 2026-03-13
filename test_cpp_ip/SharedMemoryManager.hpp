@@ -20,6 +20,10 @@ private:
     int width, height, channels;
     size_t data_size;
 
+    std::string shm_chips_name; 
+    int chips_fd;
+    volatile int* chips_ptr;
+
     int shm_fd;
     unsigned char* shm_ptr;
     sem_t *sem_full, *sem_empty, *sem_exit;
@@ -46,12 +50,14 @@ public:
           sem_exit_name("/" + name + "_exit"),
           yolo_shm_name("/" + name + "_yolo"),  
           yolo_sem_name("/" + name + "_yolo_sem"),
+          shm_chips_name("/"+ name + "_chips_num"),
           width(w), height(h), channels(c) {
         
         data_size = width * height * channels;
         yolo_size = 4 + (100 * sizeof(Detection));
 
         // Shared Memory 생성
+        shm_unlink(shm_name.c_str());
         shm_fd = shm_open(shm_name.c_str(), O_CREAT | O_RDWR, 0666);
         ftruncate(shm_fd, data_size);
         shm_ptr = (unsigned char*)mmap(0, data_size, PROT_WRITE, MAP_SHARED, shm_fd, 0);
@@ -64,11 +70,17 @@ public:
         sem_empty = sem_open(sem_empty_name.c_str(), O_CREAT, 0666, 1);
         sem_exit = sem_open(sem_exit_name.c_str(), O_CREAT, 0666, 0);
         
-        sem_unlink(yolo_sem_name.c_str());
+        shm_unlink(shm_chips_name.c_str());
+        chips_fd = shm_open(shm_chips_name.c_str(), O_CREAT | O_RDWR, 0666);
+        ftruncate(chips_fd, sizeof(int));
+        chips_ptr = (int*)mmap(0, sizeof(int), PROT_READ | PROT_WRITE, MAP_SHARED, chips_fd, 0);
+        
+        shm_unlink(yolo_shm_name.c_str());
         yolo_fd = shm_open(yolo_shm_name.c_str(), O_CREAT | O_RDWR, 0666);
         ftruncate(yolo_fd, yolo_size);
         yolo_ptr = mmap(0, yolo_size, PROT_READ | PROT_WRITE, MAP_SHARED, yolo_fd, 0);
-
+        
+        sem_unlink(yolo_sem_name.c_str());
         sem_yolo = sem_open(yolo_sem_name.c_str(), O_CREAT, 0666, 1);
     }
 
@@ -88,6 +100,15 @@ public:
         sem_close(sem_yolo);
         sem_unlink(yolo_sem_name.c_str());
         std::cout << "SharedMemory Resources Cleaned Up." << std::endl;
+    }
+
+    void setChipsNum(int num) {
+        *chips_ptr = num;
+    }
+
+    int getChipsNum() {
+        int i_return = *chips_ptr;
+        return i_return;
     }
 
     void sendFrame(const cv::Mat& frame) {

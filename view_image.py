@@ -1,8 +1,8 @@
 import os
 import shutil
 
-#folder_path = 'test_cpp_ip/try_2/single_merged_image'
-folder_path = 'test_cpp_ip/real_time'  
+folder_path = 'test_cpp_ip/try_3/image'
+#folder_path = 'test_cpp_ip/real_time'  
 preview_file = 'preview.jpg'
 
 images = [f for f in os.listdir(folder_path) if f.lower().endswith(('.jpg', '.png'))]

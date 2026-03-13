@@ -56,6 +56,10 @@ class SharedMemory:
             self.mem_yolo = mmap.mmap(self.fd_yolo, self.yolo_size, access=mmap.ACCESS_WRITE)
             self.sem_yolo = posix_ipc.Semaphore(f"/{self.base_name}_yolo_sem")
 
+            shm_path_chips = f"//dev/shm/{self.base_name}_chips_num"
+            self.fd_chips = os.open(shm_path_chips, os.O_RDWR)
+            self.mem_chips = mmap.mmap(self.fd_chips, 4, prot=mmap.PROT_READ | mmap.PROT_WRITE)
+
             print(f"Successfully connected to SHM: {self.base_name}")
             
         except posix_ipc.ExistentialError:
@@ -71,6 +75,19 @@ class SharedMemory:
         self.sem_empty.release()
         
         return img
+    
+    def set_chips_num(self, num):
+        binary_data = struct.pack('i', num)
+        
+        self.mem_chips[:4] = binary_data
+
+    def get_chips_num(self):
+        binary_data = self.mem_chips[:4]
+        
+        num = struct.unpack('i', binary_data)[0]
+        
+        return num
+        
     
     def send_yolo_result(self, detections):
         try:
@@ -153,9 +170,9 @@ def main():
     s_m_m = SharedMemory("yolo_frame", WIDTH, HEIGHT)
 
     print(">>> Python Inference Loop Started...")
-    prev_time = 0
+    #prev_time = 0
     frame_count = 0
-    start_time = time.time()
+    #start_time = time.time()
 
     boxes, scores, classes = np.zeros(0), np.zeros(0), np.zeros(0)
     co_helper = COCO_test_helper(enable_letter_box=True)
@@ -166,35 +183,79 @@ def main():
                     break
                 
                 frame_count += 1
-                # 공유 메모리에서 이미지 획득
-                img_input = s_m_m.get_frame()
-                if img_input is None:
+
+                image_num = s_m_m.get_chips_num()
+
+                if image_num is None or image_num != 0 :
                     continue
 
-                current_time = time.time()
+                outputs = []
+                send_data = None
+
+                count = 1;
+
+                image_num = 1
+
+                for i in range(image_num) :
+                    img_input = s_m_m.get_frame()
+                    if img_input is None:
+                        continue
+
+                    input_data = co_helper.letter_box(im= img_input.copy(), new_shape=(IMG_SIZE[1], IMG_SIZE[0]), pad_color=(0,0,0))
+
+                    output = model.run([input_data])
+                    output, boxes, scores, classes = n_post_process(output, co_helper)
+
+                    if output is None :
+                        output = np.zeros(6, dtype=np.float32)
+                        
+                    else :
+                        output = one_thing_left(output) 
+
+                    outputs.append(output)
+                
+                send_data = np.vstack(outputs).astype(np.float32)
+                if boxes is not None:
+                    img_input = pack_add_draw(img_input, boxes, scores, classes)
+                    img_input = cv2.cvtColor(img_input, cv2.COLOR_RGB2BGR)
+                    
+                    cv2.imwrite(f'test_cpp_ip/real_time/{frame_count}.jpg', img_input)
+
+                s_m_m.send_yolo_result(send_data)
+
+                s_m_m.set_chips_num(0)
+
+
+                # 공유 메모리에서 이미지 획득
+                #img_input = s_m_m.get_frame()
+                #if img_input is None:
+                #    continue
+
+                #current_time = time.time()
 
                 #future_0 = executor.submit(run, model, img_input)
                 #future_1 = executor.submit(run, model_1, img_input)
 		
                 #outputs = future_0.result()
 
-                img = co_helper.letter_box(im= img_input.copy(), new_shape=(IMG_SIZE[1], IMG_SIZE[0]), pad_color=(0,0,0))
+                #img = co_helper.letter_box(im= img_input.copy(), new_shape=(IMG_SIZE[1], IMG_SIZE[0]), pad_color=(0,0,0))
                 #img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                 #cv2.imwrite(f'test_cpp_ip/cpp_trans_py_image/{frame_count}.jpg', cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
 
-                input_data = img
+                #input_data = img
 
-                output = model.run([input_data])
-                outputs, boxes, scores, classes = n_post_process(output, co_helper)
+                #output = model.run([input_data])
+                #outputs, boxes, scores, classes = n_post_process(output, co_helper)
                 #outputs_1 = future_1.result()
                 #outputs_1, boxes, scores, classes = n_post_process(outputs_1)
-                outputs_1 = None
+                #outputs_1 = None
 
-                if outputs is not None :
-                    s_m_m.send_yolo_result(outputs)
-                else :
-                     empty_thing = np.empty((0, 6), dtype=np.float32)
-                     s_m_m.send_yolo_result(empty_thing)
+                #if outputs is not None :
+                #    outputs = one_thing_left(outputs);
+                #    s_m_m.send_yolo_result(outputs)
+                #else :
+                #    empty_thing = np.empty((0, 6), dtype=np.float32)
+                #    s_m_m.send_yolo_result(empty_thing)
 
                 # valid_outputs = []
                 # if outputs is not None:
@@ -209,21 +270,21 @@ def main():
                 #     empty_thing = np.empty((0, 6), dtype=np.float32)
                 #     s_m_m.send_yolo_result(empty_thing)
 
-                if boxes is not None:
-                    img_input = pack_add_draw(img_input, boxes, scores, classes)
-                    img_input = cv2.cvtColor(img_input, cv2.COLOR_RGB2BGR)
+                #if boxes is not None:
+                #   img_input = pack_add_draw(img_input, boxes, scores, classes)
+                #   img_input = cv2.cvtColor(img_input, cv2.COLOR_RGB2BGR)
                 
-                    cv2.imwrite(f'test_cpp_ip/real_time/{frame_count}.jpg', img_input)
+                #    cv2.imwrite(f'test_cpp_ip/real_time/{frame_count}.jpg', img_input)
 
                 #del img_input
 
-                d_t = current_time - prev_time
-                if d_t > 0:
-                    fps = 1 / d_t
-                else:
-                    fps = 0
+                #d_t = current_time - prev_time
+                #if d_t > 0:
+                #    fps = 1 / d_t
+                #else:
+                #    fps = 0
 
-                prev_time = current_time
+                #prev_time = current_time
 
                 #print(f"\r[Inference] FPS: {fps:6.2f} | Device: {target}", end='')
 
@@ -235,9 +296,9 @@ def main():
         except KeyboardInterrupt:
             print("\nStop.")
         finally:
-            end = time.time()
-            flow_time = end - start_time
-            print(f'avg FPS : {frame_count / flow_time}')
+            #end = time.time()
+            #flow_time = end - start_time
+            #print(f'avg FPS : {frame_count / flow_time}')
             s_m_m.close()
             cv2.destroyAllWindows()
 

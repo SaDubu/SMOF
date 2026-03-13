@@ -83,7 +83,7 @@ void LaborManager::capture_worker(std::string& pipe, LockFreeQueueSPSC<cv::Mat>&
 
         cap >> frame;
         if (frame.empty()) continue;
-        raw_q.Push(frame.clone());
+        //raw_q.Push(frame.clone());
         display_q.Push(frame.clone());
     }
 }
@@ -109,11 +109,11 @@ void LaborManager::mask_worker(LockFreeQueueSPSC<cv::Mat>& motion_q, LockFreeQue
 
         if (motion_q.Pop(local_motion)) {
             is_next_work = mask_moving_area(local_motion, result);
+            /*
             if (! is_next_work) {
-                std::vector<cv::Rect> e_rect;
-                rect_q.Push(e_rect);
-                continue;
+                printf("mask_worker Error, No result");
             }
+            */
             mask_q.Push(result);
         }
         else {
@@ -157,7 +157,10 @@ void LaborManager::draw_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>& bbox_q,
 }
 
 //resize로 진행을 하고 있는 부분
-void LaborManager::crop_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>& rect_q, LockFreeQueueSPSC<cv::Mat>& display_q, LockFreeQueueSPSC<std::vector<cv::Mat>>& chips_q) {
+// 이 경우에 문제는 하나의 박스로 되지 않는 경우에는 2개로 나누어지게 된다.
+// python에서 추론한 object의 갯수를 보낼 수 있도록 설계하였기 때문에 각 chip(움직이는 영역을 잘라둔 것)에서 추론된
+// object의 class 중 가장 높은 점수를 기록한 추론 정보만 넘기도록 하면 count를 chip의 갯수에 맞게 설계할 수 있을 것으로 보임.
+void LaborManager::crop_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>& rect_q, LockFreeQueueSPSC<cv::Mat>& display_q, LockFreeQueueSPSC<std::vector<cv::Mat>>& chips_q, LockFreeQueueSPSC<ChipInfo>& o_q) {
     cv::Mat frame;
     std::vector<cv::Rect> rects;
     int pad = 10;
@@ -167,7 +170,9 @@ void LaborManager::crop_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>& rect_q,
     while (m_is_running) {
         if (rect_q.Pop(rects)) {
             if (display_q.Pop(frame)) {
+                ChipInfo chip_info;
                 std::vector<cv::Mat> resized_chips;
+                std::vector<cv::Rect> safe_rects;
                 int stand_cols = frame.cols;
                 int stand_rows = frame.rows;
 
@@ -185,9 +190,13 @@ void LaborManager::crop_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>& rect_q,
                         cv::resize(roi, resized, target_size, 0, 0, cv::INTER_LINEAR);
 
                         resized_chips.emplace_back(resized);
+                        safe_rects.emplace_back(safe_rect);
                     }
                 }
                 chips_q.Push(resized_chips);
+                chip_info.image = frame.clone();
+                chip_info.original_rect = safe_rects;
+                o_q.Push(chip_info);
             }
         }
         else {
@@ -196,7 +205,9 @@ void LaborManager::crop_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>& rect_q,
     }
 }
 
-//움직이는 부분만 값 유지 나머지는 검은색 처리
+//움직이는 부분만 값 유지.
+// * 문제점 : 하얀 배경으로 학습을 시켜서 그런지 움직이는 물체와 그 주변부 자체를 하나의 object로 인식을 함.
+//           그래서 제대로 인식을 해주지 않음. 
 void LaborManager::new_crop_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>& rect_q, LockFreeQueueSPSC<cv::Mat>& display_q, LockFreeQueueSPSC<cv::Mat>& filtered_frame_q) {
     cv::Mat frame;
     std::vector<cv::Rect> rects;
@@ -221,7 +232,6 @@ void LaborManager::new_crop_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>& rec
                         frame(safe_rect).copyTo(result(safe_rect));
                     }
                 }
-
                 filtered_frame_q.Push(result);
             }
         }
