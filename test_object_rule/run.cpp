@@ -345,7 +345,7 @@ int run_2() {
             continue;
         }
 
-        display_tracker_monitor(tracker_vector);
+        //display_tracker_monitor(tracker_vector);
         //draw_tracker_visualization(display, tracker_vector);
         cv::resize(display, display, cv::Size(1920, 1080), 0, 0, cv::INTER_LINEAR);
         cv::imshow(window_name, display);
