@@ -1,6 +1,7 @@
 #include "LaborManager.hpp"
 #include "MotionDetector.hpp"
 #include "LFQSPSC.h"
+#include "SharedMemoryManager.hpp"
 
 LaborManager::LaborManager(bool* is_running_ptr) : m_is_running(is_running_ptr) {
 
@@ -9,7 +10,7 @@ LaborManager::LaborManager(bool* is_running_ptr) : m_is_running(is_running_ptr) 
 bool LaborManager::mask_moving_area(cv::Mat& motion_image, cv::Mat& result) {
     cv::Mat binary, morph;
 
-    cv::threshold(motion_image, binary, 20, 255, cv::THRESH_BINARY);
+    cv::threshold(motion_image, binary, 50, 255, cv::THRESH_BINARY);
 
     cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(30, 30));
     cv::dilate(binary, morph, kernel);
@@ -76,25 +77,42 @@ std::vector<cv::Rect> LaborManager::get_boxes(cv::Mat& mask) {
 
 void LaborManager::capture_worker(std::string& pipe, LockFreeQueueSPSC<cv::Mat>& raw_q, LockFreeQueueSPSC<cv::Mat>& display_q) {
     cv::VideoCapture cap;
-    cap.open(pipe, cv::CAP_GSTREAMER);
-    
+    //cap.open(pipe, cv::CAP_GSTREAMER);
+    cap.open(std::stoi(pipe), cv::CAP_V4L2);
+
     while (m_is_running) {
         cv::Mat frame;
 
         cap >> frame;
         if (frame.empty()) continue;
-        //raw_q.Push(frame.clone());
         display_q.Push(frame.clone());
     }
 }
 
 void LaborManager::diff_worker(MotionDetector& detector, LockFreeQueueSPSC<cv::Mat>& raw_q, LockFreeQueueSPSC<cv::Mat>& motion_q) {
     while(m_is_running) {
-        cv::Mat frame, motion_log;
+        cv::Mat frame, motion_log, result;
 
         if (raw_q.Pop(frame)) {
             motion_log = detector.process(frame);
             motion_q.Push(motion_log);
+        }
+        else {
+            std::this_thread::yield();
+        }
+    }
+}
+
+void LaborManager::dmr_worker(MotionDetector& detector, LockFreeQueueSPSC<cv::Mat>& raw_q, LockFreeQueueSPSC<cv::Mat>& motion_q, LockFreeQueueSPSC<std::vector<cv::Rect>>& rect_q) {
+    while(m_is_running) {
+        cv::Mat frame, motion_log, result;
+
+        if (raw_q.Pop(frame)) {
+            motion_q.Push(frame.clone());
+            motion_log = detector.process(frame);
+            mask_moving_area(motion_log, result);
+            std::vector<cv::Rect> rects = get_boxes(result);
+            rect_q.Push(rects);
         }
         else {
             std::this_thread::yield();
@@ -147,6 +165,54 @@ void LaborManager::draw_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>& bbox_q,
                     cv::rectangle(canvas, rect, cv::Scalar(0, 255, 255), 2);
                 }
 
+                final_q.Push(canvas);
+            }
+        }
+        else {
+            std::this_thread::yield();
+        }
+    }
+}
+
+void LaborManager::RGB_draw_save_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>& bbox_q, LockFreeQueueSPSC<cv::Mat>& display_q, LockFreeQueueSPSC<cv::Mat>& final_q, LockFreeQueueSPSC<LockFreeQueueSPSC<std::string>*>& file_lists) {
+    cv::Mat canvas;
+    std::vector<cv::Rect> rects;
+    LockFreeQueueSPSC<std::string>* file_list;
+
+    size_t count = 0;
+    
+    while (m_is_running) {
+        if (bbox_q.Pop(rects)) {
+            if (display_q.Pop(canvas)) {
+                if (!rects.empty()) {
+                    move_frame_save(canvas, rects);
+                }
+                else {
+                    ++count;
+                    if (count == 90) { //약 3초 이내
+                        file_list = get_file_list();
+                        file_lists.Push(file_list);
+                        count = 0;
+                    }
+                }
+                int one_third = canvas.cols / 3;
+                int two_thirds = one_third * 2;
+
+                for (cv::Rect& rect : rects) {
+                    int center_x = rect.x + (rect.width / 2);
+                    cv::Scalar color;
+
+                    if (center_x < one_third) {
+                        color = cv::Scalar(0, 0, 255);
+                    } 
+                    else if (center_x < two_thirds) {
+                        color = cv::Scalar(0, 255, 0);
+                    } 
+                    else {
+                        color = cv::Scalar(255, 0, 0);
+                    }
+                    cv::rectangle(canvas, rect, color, 2);
+                }
                 final_q.Push(canvas);
             }
         }
@@ -245,38 +311,78 @@ void LaborManager::new_crop_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>& rec
 void tracker_update(TrackerVector* trackers) {
     for (int i = 0; i < trackers->size(); ++i) {
         Tracker& t = (*trackers)[i];
+        if (!t.data.checked_in) {
+            t.data.checked_in = check_x_is_here((int)t.data.past_cx); //영역 내부로 들어왔는지 여기서 확인.
+        }
         
         t.data.past_cx += t.data.vx;
         t.data.past_cy += t.data.vy;
         
+        t.data.past_x1 += t.data.vx;
+        t.data.past_x2 += t.data.vx;
+        t.data.past_y1 += t.data.vy;
+        t.data.past_y2 += t.data.vy;
+
         ++t.data.missing_count; 
     }
 }
 
-//새로 들어온 object와 tracker가 담고 있는 object matching
 void tracker_match(Detection* object, TrackerVector* trackers) {
     float cx = (object->x1 + object->x2) * 0.5f;
     float cy = (object->y1 + object->y2) * 0.5f;
 
     int best_match_idx = -1;
     float min_dist_sq = 999999.0f;
+    float best_iou = -1.0f;
 
-    //가장 가까이에 있는 것을 찾도록 함.
     for (int i = 0; i < trackers->size(); ++i) {
         Tracker& t = (*trackers)[i];
+        if (object->class_id == -1.0f) {
+            object->class_id = *t.history.get_infer_class();
+        }
         
+        int conditions_met = 0;
+
         float dx = t.data.past_cx - cx;
         float dy = t.data.past_cy - cy;
         float dist_sq = dx * dx + dy * dy;
+        
+        if (dist_sq <= MAX_DIST_SQ) {
+            conditions_met++;
+        }
 
-        if (dist_sq < min_dist_sq && dist_sq < MAX_DIST_SQ) {
-            min_dist_sq = dist_sq;
-            best_match_idx = i;
+        int area_object = calc_bbox_size(object->x1, object->y1, object->x2, object->y2);
+        int area_past = *t.history.get_bbox_average();
+
+        float iou = calculate_iou(object->x1, object->y1, object->x2, object->y2, area_object,
+                                  t.data.past_x1, t.data.past_y1, t.data.past_x2, t.data.past_y2, area_past);
+        
+        if (iou >= IOU_THRESHOLD) {
+            conditions_met++;
+        }
+
+        float ratio = calculate_2Box_size_ratio(area_object, area_past);
+
+        if (ratio >= IOU_THRESHOLD) {
+            conditions_met++;
+        }
+
+        if (object->class_id == *t.history.get_infer_class()) {
+            conditions_met++;
+        }
+
+        if (conditions_met >= 2) {
+            if (iou > best_iou) {
+                best_iou = iou;
+                best_match_idx = i;
+            }
         }
     }
 
     if (best_match_idx != -1) {
         Tracker& matched_tr = (*trackers)[best_match_idx];
+
+        //printf("Matched ID: %d | Diff: %.2f, %.2f\n", matched_tr.data.tracker_number, cx - matched_tr.data.past_cx, cy - matched_tr.data.past_cy);
         
         matched_tr.data.vx = cx - (matched_tr.data.past_cx - matched_tr.data.vx);
         matched_tr.data.vy = cy - (matched_tr.data.past_cy - matched_tr.data.vy);
@@ -284,34 +390,53 @@ void tracker_match(Detection* object, TrackerVector* trackers) {
         matched_tr.data.past_cx = cx;
         matched_tr.data.past_cy = cy;
         
+        matched_tr.data.past_x1 = object->x1;
+        matched_tr.data.past_y1 = object->y1;
+        matched_tr.data.past_x2 = object->x2;
+        matched_tr.data.past_y2 = object->y2;
 
         matched_tr.data.missing_count = 0;
-        matched_tr.history.add(static_cast<int>(object->class_id));
-
-    } else {
+        int area_object = calc_bbox_size(object->x1, object->y1, object->x2, object->y2);
+        matched_tr.history.add(static_cast<int>(object->class_id), area_object);
+    }
+    else {
+        // 매칭 실패 시 새로운 Tracker 생성
         Tracker* new_tr = trackers->emit_back();
         
         if (new_tr != nullptr) {
             new_tr->data.past_cx = cx;
             new_tr->data.past_cy = cy;
+            
+            new_tr->data.past_x1 = object->x1;
+            new_tr->data.past_y1 = object->y1;
+            new_tr->data.past_x2 = object->x2;
+            new_tr->data.past_y2 = object->y2;
+            
             new_tr->data.vx = 0.0f;
             new_tr->data.vy = 0.0f;
             new_tr->data.missing_count = 0;
-            new_tr->data.is_lost = false;
-            new_tr->history.add(static_cast<int>(object->class_id));
+            int area_object = calc_bbox_size(object->x1, object->y1, object->x2, object->y2);
+            new_tr->history.add(static_cast<int>(object->class_id), area_object);
         }
     }
+
 }
 
-//아직 테스트를 다 진행하지 못함.
 void LaborManager::track_worker(LockFreeQueueSPSC<std::vector<Detection>>& objects_q, TrackerVector* trackers) {
     std::vector<Detection> objects;
 
     Detection* object;
 
-    while (true) {
+    size_t count = 0;
+
+    while (*m_is_running) {
         if (!objects_q.Pop(objects)) {
-            std::this_thread::yield();
+            ++count;
+            if (count == 30) {
+                trackers->clear();
+                count = 0;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
             continue;
         }
 
@@ -320,11 +445,87 @@ void LaborManager::track_worker(LockFreeQueueSPSC<std::vector<Detection>>& objec
         }
 
         for (int i = 0; i < objects.size(); ++i) {
-            object = &objects[i];
-            
-            tracker_match(object, trackers);
+            tracker_match(&objects[i], trackers);
         }
 
         trackers->cleanup();
+    }
+}
+
+void LaborManager::yolo_worker(SharedMemoryManager& smm, LockFreeQueueSPSC<cv::Mat>& frames, LockFreeQueueSPSC<std::vector<Detection>>& yolo_results) {
+    std::vector<Detection>* receive_output;
+    cv::Mat frame;
+
+    while (m_is_running) {
+        if (!frames.Pop(frame)) {
+            continue;
+        }
+        if (frame.empty()) {
+            continue;
+        }
+        smm.sendFrame(frame);
+
+        receive_output = smm.receiveYoloResult();
+        if (receive_output == nullptr) {
+            continue;
+        }
+
+        std::vector<Detection> dets = *receive_output;
+
+        yolo_results.Push(dets);
+    }
+}
+
+void LaborManager::filter_worker(LockFreeQueueSPSC<std::vector<Detection>>& yolo_results, LockFreeQueueSPSC<std::vector<cv::Rect>>& rect_q, LockFreeQueueSPSC<std::vector<Detection>>& filter_results) {
+    std::vector<cv::Rect> rects;
+    std::vector<Detection> yolo_result;
+
+    while (m_is_running) {
+        if (!yolo_results.Pop(yolo_result)) {
+            continue;
+        }
+
+        if (!rect_q.Pop(rects)) {
+            continue;
+        }
+
+        keepBestDetectionByCenter(yolo_result, rects);
+        filter_results.Push(yolo_result);
+    }
+}
+
+void LaborManager::get_image_move_area(LockFreeQueueSPSC<LockFreeQueueSPSC<std::string>*>& file_lists, LockFreeQueueSPSC<cv::Mat>& frames, LockFreeQueueSPSC<std::vector<cv::Rect>>& rect_q) {
+    LockFreeQueueSPSC<std::string>* file_list = nullptr;
+    std::string file_path = "";
+    std::string image_path = "";
+    std::string move_area_path = "";
+    std::vector<cv::Rect> rects;
+    cv::Mat frame;
+    while (m_is_running) {
+        if (!file_lists.Pop(file_list)) {
+            continue;
+        }
+
+        if (file_list == nullptr) {
+            continue;
+        }
+
+        while (true) {
+            if (!file_list->Pop(file_path)) {
+                break;
+            }
+
+            move_area_path = file_path + ".txt";
+            image_path = file_path + ".jpeg";
+
+            rects = get_target_regions_from_file(move_area_path);
+            frame = get_target_image_from_file(image_path);
+
+            rect_q.Push(rects);
+            frames.Push(frame);
+        }
+
+        delete file_list;
+        file_list = nullptr;
     }
 }

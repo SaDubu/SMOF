@@ -1,0 +1,17 @@
+nc: 10
+names:
+  0: pepero
+  1: lotte_sand
+  2: butter_ring
+  3: oreo_thins
+  4: zec
+  5: pringles
+  6: jagabee
+  7: spicy_shrimp_cracker
+  8: cheetos
+  9: pocachip
+  
+path: ./
+train: D:/new/test/HexaDeca_1/train.txt
+val: D:/new/test/HexaDeca_1/valid.txt
+test: D:/new/test/HexaDeca_1/test.txt

@@ -286,7 +286,7 @@ void tracker_match(Detection* object, TrackerVector* trackers) {
         
 
         matched_tr.data.missing_count = 0;
-        matched_tr.history.add(static_cast<int>(object->class_id));
+        matched_tr.history.add(static_cast<int>(object->class_id), 200);
 
     } else {
         Tracker* new_tr = trackers->emit_back();
@@ -298,7 +298,7 @@ void tracker_match(Detection* object, TrackerVector* trackers) {
             new_tr->data.vy = 0.0f;
             new_tr->data.missing_count = 0;
             new_tr->data.is_lost = false;
-            new_tr->history.add(static_cast<int>(object->class_id));
+            new_tr->history.add(static_cast<int>(object->class_id), 200);
         }
     }
 }

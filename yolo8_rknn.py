@@ -9,14 +9,14 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 
-OBJ_THRESH = 0.25
+OBJ_THRESH = 0.45
 NMS_THRESH = 0.45
 
 # The follew two param is for map test
 # OBJ_THRESH = 0.001
 # NMS_THRESH = 0.65
 
-IMG_SIZE = (480, 480)  # (width, height), such as (1280, 736)
+IMG_SIZE = (640, 640)  # (width, height), such as (1280, 736)
 
 def get_yaml_info(yaml_path):
     with open(yaml_path, 'r', encoding='utf-8') as f:
@@ -30,7 +30,8 @@ def get_yaml_info(yaml_path):
     
     return tuple(class_list), id_list
 
-yaml_file = "test_cpp_ip/test_folder/102_class/data.yaml" 
+#yaml_file = "test_cpp_ip/test_folder/102_class/data.yaml" 
+yaml_file = "new_data.yaml" 
 CLASSES, coco_id_list = get_yaml_info(yaml_file)
 
 
@@ -161,7 +162,9 @@ def post_process(input_data):
     return boxes, classes, scores
 
 def sigmoid(x):
-    return 1 / (1 + np.exp(-x))
+    return np.where(x >= 0, 
+                    1 / (1 + np.exp(-x)), 
+                    np.exp(x) / (1 + np.exp(x)))
 
 def sigmoid_post_process(input_data) :
     boxes, scores, classes_conf = [], [], []
@@ -216,6 +219,11 @@ def sigmoid_post_process(input_data) :
 def pack_add_draw(image, boxes, scores, classes) :
     co_helper = COCO_test_helper(enable_letter_box=True)
     add_draw(image, boxes, scores, classes)
+    return image
+
+def pack_draw(image, boxes, scores, classes) :
+    co_helper = COCO_test_helper(enable_letter_box=True)
+    draw(image, boxes, scores, classes)
     return image
 
 def dfl_optimized(x):
