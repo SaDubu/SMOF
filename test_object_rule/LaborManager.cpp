@@ -174,18 +174,20 @@ void LaborManager::draw_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>& bbox_q,
     }
 }
 
-void LaborManager::RGB_draw_save_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>& bbox_q, LockFreeQueueSPSC<cv::Mat>& display_q, LockFreeQueueSPSC<cv::Mat>& final_q, LockFreeQueueSPSC<LockFreeQueueSPSC<std::string>*>& file_lists) {
-    cv::Mat canvas;
+void LaborManager::distribution_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>& in_rect_q, LockFreeQueueSPSC<cv::Mat>& in_mat_q, 
+        LockFreeQueueSPSC<std::vector<cv::Rect>>& out_rect_q, LockFreeQueueSPSC<cv::Mat>& out_mat_q,
+        LockFreeQueueSPSC<LockFreeQueueSPSC<std::string>*>& file_lists) {
+    cv::Mat mat;
     std::vector<cv::Rect> rects;
     LockFreeQueueSPSC<std::string>* file_list;
 
     size_t count = 0;
-    
+
     while (m_is_running) {
-        if (bbox_q.Pop(rects)) {
-            if (display_q.Pop(canvas)) {
+        if (in_rect_q.Pop(rects)) {
+            if (in_mat_q.Pop(mat)) {
                 if (!rects.empty()) {
-                    move_frame_save(canvas, rects);
+                    move_frame_save(mat, rects);
                 }
                 else {
                     ++count;
@@ -195,23 +197,44 @@ void LaborManager::RGB_draw_save_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>
                         count = 0;
                     }
                 }
-                int one_third = canvas.cols / 3;
-                int two_thirds = one_third * 2;
+                std::vector<cv::Rect> out_rects = rects;
+                out_rect_q.Push(out_rects);
+                out_mat_q.Push(mat.clone());
+            }
+        }
+    }
+}   
+
+void LaborManager::RGB_draw_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>& bbox_q, LockFreeQueueSPSC<cv::Mat>& display_q, LockFreeQueueSPSC<cv::Mat>& final_q) {
+    cv::Mat canvas;
+    std::vector<cv::Rect> rects;
+    
+    while (m_is_running) {
+        if (bbox_q.Pop(rects)) {
+            if (display_q.Pop(canvas)) {
+                int w = canvas.cols;
+                int h = canvas.rows;
+                int one_third = w / 3;
+                int two_thirds = (w / 3) * 2;
+
+                cv::line(canvas, cv::Point(one_third, 0), cv::Point(one_third, h), cv::Scalar(180, 180, 180), 1, cv::LINE_AA);
+                cv::line(canvas, cv::Point(two_thirds, 0), cv::Point(two_thirds, h), cv::Scalar(180, 180, 180), 1, cv::LINE_AA);
 
                 for (cv::Rect& rect : rects) {
-                    int center_x = rect.x + (rect.width / 2);
+                    cv::Point center(rect.x + rect.width / 2, rect.y + rect.height / 2);
                     cv::Scalar color;
 
-                    if (center_x < one_third) {
-                        color = cv::Scalar(0, 0, 255);
+                    if (center.x < one_third) {
+                        color = cv::Scalar(0, 0, 255); 
                     } 
-                    else if (center_x < two_thirds) {
+                    else if (center.x < two_thirds) {
                         color = cv::Scalar(0, 255, 0);
                     } 
                     else {
-                        color = cv::Scalar(255, 0, 0);
+                        color = cv::Scalar(255, 0, 0); 
                     }
-                    cv::rectangle(canvas, rect, color, 2);
+
+                    cv::circle(canvas, center, 5, color, -1, cv::LINE_AA);
                 }
                 final_q.Push(canvas);
             }
@@ -337,7 +360,7 @@ void tracker_match(Detection* object, TrackerVector* trackers) {
 
     for (int i = 0; i < trackers->size(); ++i) {
         Tracker& t = (*trackers)[i];
-        if (object->class_id == -1.0f) {
+        if (object->class_id == -2.0f) {
             object->class_id = *t.history.get_infer_class();
         }
         
@@ -432,13 +455,13 @@ void LaborManager::track_worker(LockFreeQueueSPSC<std::vector<Detection>>& objec
     while (*m_is_running) {
         if (!objects_q.Pop(objects)) {
             ++count;
-            if (count == 30) {
+            if (count >= 15) {
                 trackers->clear();
-                count = 0;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             continue;
         }
+        count = 0;
 
         if (trackers->size() > 0) {
             tracker_update(trackers);

@@ -140,7 +140,7 @@ void keepBestDetectionByCenter(std::vector<Detection>& detections, std::vector<c
         for (int i = 0; i < detections.size(); ++i) {
             Detection& det = detections[i];
             if (change) {
-                det.class_id = -1.0f;
+                det.class_id = -2.0f;
                 det.x1 = target_region.x;
                 det.x2 = target_region.x + target_region.width;
                 det.y1 = target_region.y;

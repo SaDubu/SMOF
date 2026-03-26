@@ -27,7 +27,11 @@ public :
 
     void draw_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>& bbox_q, LockFreeQueueSPSC<cv::Mat>& display_q, LockFreeQueueSPSC<cv::Mat>& final_q);
 
-    void RGB_draw_save_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>& bbox_q, LockFreeQueueSPSC<cv::Mat>& display_q, LockFreeQueueSPSC<cv::Mat>& final_q, LockFreeQueueSPSC<LockFreeQueueSPSC<std::string>*>& file_lists);
+    void distribution_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>& in_rect_q, LockFreeQueueSPSC<cv::Mat>& in_mat_q, 
+        LockFreeQueueSPSC<std::vector<cv::Rect>>& out_rect_q, LockFreeQueueSPSC<cv::Mat>& out_mat_q,
+        LockFreeQueueSPSC<LockFreeQueueSPSC<std::string>*>& file_lists);
+
+    void RGB_draw_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>& bbox_q, LockFreeQueueSPSC<cv::Mat>& display_q, LockFreeQueueSPSC<cv::Mat>& final_q);
 
     void crop_worker(LockFreeQueueSPSC<std::vector<cv::Rect>>& rect_q, LockFreeQueueSPSC<cv::Mat>& display_q, LockFreeQueueSPSC<std::vector<cv::Mat>>& chips_q, LockFreeQueueSPSC<ChipInfo>& o_q);
 

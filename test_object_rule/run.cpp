@@ -43,6 +43,9 @@ LockFreeQueueSPSC<std::vector<cv::Rect>> r_q;
 LockFreeQueueSPSC<std::vector<Detection>> yolo_results;
 LockFreeQueueSPSC<std::vector<Detection>> filter_results;
 
+LockFreeQueueSPSC<cv::Mat> in_mat_q;
+LockFreeQueueSPSC<std::vector<cv::Rect>> in_rects_q;
+
 std::map<int, std::vector<cv::Point>> path_history;
 
 void sendFrame_g(SharedMemoryManager* p_smm, LockFreeQueueSPSC<cv::Mat>* tunnel, LockFreeQueueSPSC<cv::Mat>* raw_q) {
@@ -314,21 +317,24 @@ int run_2() {
     });
     std::thread t2(sendFrame_g, &smm, &tunnel, &raw_q);
     std::thread t3([&]() {
-        lm.dmr_worker(detector, raw_q, motion_q, rect_q);
+        lm.dmr_worker(detector, raw_q, in_mat_q, in_rects_q);
     });
     std::thread t4([&]() {
-        lm.RGB_draw_save_worker(rect_q, motion_q, final_q, file_lists);
+        lm.distribution_worker(in_rects_q, in_mat_q, rect_q, motion_q, file_lists);
     });
     std::thread t5([&]() {
-        lm.get_image_move_area(file_lists, frames, r_q);
+        lm.RGB_draw_worker(rect_q, motion_q, final_q);
     });
     std::thread t6([&]() {
-        lm.yolo_worker(smm, frames, yolo_results);
+        lm.get_image_move_area(file_lists, frames, r_q);
     });
     std::thread t7([&]() {
-        lm.filter_worker(yolo_results, r_q, filter_results);
+        lm.yolo_worker(smm, frames, yolo_results);
     });
     std::thread t8([&]() {
+        lm.filter_worker(yolo_results, r_q, filter_results);
+    });
+    std::thread t9([&]() {
         lm.track_worker(filter_results, &tracker_vector);
     });
 
@@ -350,7 +356,7 @@ int run_2() {
         cv::resize(display, display, cv::Size(1920, 1080), 0, 0, cv::INTER_LINEAR);
         cv::imshow(window_name, display);
     }
-    t1.join(); t2.join(); t3.join(); t4.join(); t5.join(); t6.join(); t7.join(); t8.join();
+    t1.join(); t2.join(); t3.join(); t4.join(); t5.join(); t6.join(); t7.join(); t8.join(); t9.join();
     return 0;
 }
 

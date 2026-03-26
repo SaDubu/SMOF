@@ -223,6 +223,8 @@ public:
         if (current_size < MAX_CAPACITY) {
             Tracker* new_tr = &data[current_size++];
 
+            *new_tr = Tracker();
+
             new_tr->data.tracker_number = next_id++;
 
             return new_tr;
@@ -234,7 +236,6 @@ public:
         int i = 0;
         while (i < current_size) {
             alarm(i);
-            erase(i);
             ++i;
         }
         current_size = 0; 
